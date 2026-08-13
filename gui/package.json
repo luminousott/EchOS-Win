@@ -9,7 +9,7 @@
   "upstream": "https://github.com/nerder-real/EchOS/",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --x64"
+    "dist": "electron-builder --win --x64 --publish never"
   },
   "devDependencies": {
     "electron": "^37.2.0",
