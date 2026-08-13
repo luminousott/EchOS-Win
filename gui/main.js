@@ -1330,14 +1330,21 @@ async function fetchFromSubGenerator(source) {
   try { base = new URL(base).origin; } catch (e) { return ips; }
 
   const subUrl = `${base}/sub?host=${PH_HOST}&uuid=${PH_UUID}`;
+  logLine(`[优选] 汇聚器 "${source}" -> 请求 ${subUrl}`);
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
     const resp = await fetch(subUrl, { signal: ctrl.signal, headers: { 'User-Agent': CF_UA } });
     clearTimeout(t);
-    if (!resp.ok) return ips;
+    if (!resp.ok) {
+      logLine(`[优选] ${subUrl} 返回 HTTP ${resp.status}`);
+      return ips;
+    }
     const decoded = base64DecodeSafe(await resp.text());
-    if (!decoded) return ips;
+    if (!decoded) {
+      logLine(`[优选] ${subUrl} 响应无法 base64 解码`);
+      return ips;
+    }
     for (const line of decoded.split(/\r?\n/)) {
       if (!line.trim()) continue;
       if (line.includes(PH_UUID) && line.includes(PH_HOST)) {
@@ -1348,7 +1355,10 @@ async function fetchFromSubGenerator(source) {
         }
       }
     }
-  } catch (e) {}
+    logLine(`[优选] "${source}" 提取到 ${ips.length} 个优选节点`);
+  } catch (e) {
+    logLine(`[优选] 汇聚器 "${source}" 拉取失败：${e.message}`);
+  }
   return ips;
 }
 
@@ -1378,6 +1388,7 @@ ipcMain.handle('fetch-cf-nodes', async (e, inputs) => {
       for (const h of extractHostsFromSubscriptionText(text)) nodes.add(h);
     } catch (e) {}
   }
+  logLine(`[优选] 汇聚器输入 [${list.join(', ')}]，共提取 ${nodes.size} 个节点`);
   return { ok: true, nodes: [...nodes].slice(0, 100) };
 });
 
