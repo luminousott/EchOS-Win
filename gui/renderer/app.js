@@ -646,8 +646,8 @@ async function showCfNodeTest() {
     <div class="modal-head"><h2>Cloudflare 节点测速</h2><button class="modal-close" data-act="close">×</button></div>
     <div class="modal-body">
       <div class="form-group">
-        <label>优选 API（每行/逗号分隔，可填多个；留空用内置节点。参考 _worker.js 优选机制）</label>
-        <textarea id="cfApiInput" rows="2" style="width:100%;padding:6px 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font-size:12px;font-family:var(--mono);outline:none">${esc(saved.join(', '))}</textarea>
+        <label>订阅 / 优选 API（每行/逗号分隔可填多个；自动提取节点 IP 测速）</label>
+        <textarea id="cfApiInput" rows="2" style="width:100%;padding:6px 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font-size:12px;font-family:var(--mono);outline:none" placeholder="https://你的worker域名/订阅?token=... 或 https://你的worker域名/admin/ADD.txt">${esc(saved.join(', '))}</textarea>
         <div style="display:flex;gap:8px;margin-top:6px">
           <button id="cfFetchBtn" class="btn small primary">获取并测速</button>
           <button id="cfBuiltinBtn" class="btn small">仅内置节点</button>

@@ -1434,7 +1434,32 @@ ipcMain.handle('test-hosts', async (e, hosts) => {
   return { ok: true, results };
 });
 
-// 从优选 API 拉取 Cloudflare 节点列表（参考 _worker.js 请求优选API）
+// 从订阅 / 优选 API 内容中提取节点 host（IP 或域名）
+function extractHostsFromSubscriptionText(text) {
+  const hosts = new Set();
+  let t = String(text || '');
+  // 订阅内容常见为 base64 整体编码（解码后是 vless:// 等链接）
+  if (!/(vless|vmess|trojan|ss|hysteria2|hysteria|tuic):\/\//i.test(t)) {
+    const decoded = base64DecodeSafe(t.replace(/\s+/g, ''));
+    if (decoded) t = decoded;
+  }
+  for (const raw of t.split(/\r?\n/)) {
+    let s = String(raw).trim();
+    if (!s) continue;
+    if (/(vless|vmess|trojan|ss|hysteria2|hysteria|tuic):\/\//i.test(s)) {
+      try { hosts.add(new URL(s).hostname); } catch (e) {}
+    } else {
+      // 纯 IP/域名行（如 admin/ADD.txt 的优选 IP 列表）
+      s = s.replace(/#.*$/, '').trim();
+      if (s.includes(':')) s = s.split(':')[0];
+      if (/^[0-9a-zA-Z][0-9a-zA-Z.\-]*$/.test(s) && s.includes('.')) hosts.add(s);
+    }
+  }
+  return [...hosts];
+}
+
+// 从订阅 / 优选 API 拉取 Cloudflare 节点列表
+// 支持：订阅地址（base64 vless 链接）、优选 IP 列表、第三方优选 API
 ipcMain.handle('fetch-cf-nodes', async (e, apiUrls) => {
   const urls = (Array.isArray(apiUrls) ? apiUrls : [apiUrls])
     .map(u => String(u || '').trim())
@@ -1444,22 +1469,12 @@ ipcMain.handle('fetch-cf-nodes', async (e, apiUrls) => {
   await Promise.allSettled(urls.map(async url => {
     try {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 6000);
+      const t = setTimeout(() => ctrl.abort(), 8000);
       const resp = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
       clearTimeout(t);
       if (!resp.ok) return;
       const text = await resp.text();
-      for (const raw of text.split(/\r?\n/)) {
-        let s = String(raw).trim();
-        if (!s) continue;
-        if (s.includes('://')) {
-          try { s = new URL(s).hostname; } catch (e) { continue; }
-        } else {
-          s = s.replace(/#.*$/, '').trim();
-          if (s.includes(':')) s = s.split(':')[0];
-        }
-        if (/^[0-9a-zA-Z][0-9a-zA-Z.\-]*\.[a-zA-Z]{2,}$/.test(s)) nodes.add(s);
-      }
+      for (const h of extractHostsFromSubscriptionText(text)) nodes.add(h);
     } catch (e) {}
   }));
   return { ok: true, nodes: [...nodes].slice(0, 100) };
