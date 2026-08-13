@@ -13,6 +13,16 @@
     <span class="cloud-icon">☁</span>
     <h1>EchOS-Win</h1>
     <span class="version" id="versionLabel"></span>
+    <span class="flex1"></span>
+    <button id="updateBtn" class="btn small">检查更新</button>
+    <div class="menu-wrap">
+      <button id="settingsBtn" class="btn small">设置 ▾</button>
+      <div class="menu" id="settingsMenu">
+        <label class="menu-check"><input type="checkbox" id="diagLogSwitch"> 显示诊断日志</label>
+        <div class="menu-sep"></div>
+        <div class="menu-item" data-act="reveal-logs">打开日志目录</div>
+      </div>
+    </div>
   </header>
 
   <main id="main">
@@ -124,6 +134,8 @@
         <span class="dot" id="statusDot"></span>
         <span id="statusText">已停止</span>
         <span id="checkLabel" class="check-label"></span>
+        <span class="flex1"></span>
+        <span id="proxySummary" class="check-label"></span>
       </div>
     </section>
   </main>

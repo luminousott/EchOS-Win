@@ -79,7 +79,8 @@ const els = {
   ruleSearchClear: $('ruleSearchClear'), ruleList: $('ruleList'), ruleFooter: $('ruleFooter'),
   launchSwitch: $('launchSwitch'), sysProxySwitch: $('sysProxySwitch'),
   startBtn: $('startBtn'), stopBtn: $('stopBtn'),
-  statusDot: $('statusDot'), statusText: $('statusText'), checkLabel: $('checkLabel'),
+  statusDot: $('statusDot'), statusText: $('statusText'), checkLabel: $('checkLabel'), proxySummary: $('proxySummary'),
+  updateBtn: $('updateBtn'), settingsBtn: $('settingsBtn'), settingsMenu: $('settingsMenu'), diagLogSwitch: $('diagLogSwitch'),
   logPanel: $('logPanel'),
   logToggle: $('logToggle'), logChevron: $('logChevron'), logTitle: $('logTitle'),
   logLevelSelect: $('logLevelSelect'), logFileBtn: $('logFileBtn'), clearLogBtn: $('clearLogBtn'),
@@ -276,6 +277,14 @@ function renderState(s) {
   });
 
   if (s.logLevel === 'checkOnly') renderCheckLines(); else renderLogTail();
+  refreshProxySummary();
+}
+
+async function refreshProxySummary() {
+  try {
+    const r = await api.getSystemProxySummary();
+    if (r && r.summary) els.proxySummary.textContent = '系统代理：' + r.summary;
+  } catch (e) {}
 }
 
 function renderStatus() {
@@ -502,6 +511,23 @@ function showPortConflict(info) {
 }
 // ======================= 事件绑定 =======================
 function bindEvents() {
+  // 检查更新 / 设置菜单 / 诊断日志
+  els.updateBtn.addEventListener('click', async () => {
+    toast('正在检查更新…');
+    const r = await api.checkUpdates();
+    if (!r.ok) { toast(r.error || '检查更新失败', true); return; }
+    if (!r.hasUpdate) { toast('已是最新版本 v' + r.current); return; }
+    showUpdateDialog(r);
+  });
+  els.settingsBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(els.settingsMenu); });
+  els.diagLogSwitch.addEventListener('change', (e) => api.setConfig({ showDiagnosticLogs: e.target.checked }));
+  document.querySelectorAll('#settingsMenu .menu-item').forEach(item => {
+    item.addEventListener('click', () => {
+      if (item.dataset.act === 'reveal-logs') api.revealLogs();
+      document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
+    });
+  });
+
   // 服务器选择
   els.serverSelect.addEventListener('change', async (e) => {
     if (!e.target.value) return;
@@ -614,8 +640,12 @@ function bindEvents() {
   });
   els.sysProxySwitch.addEventListener('change', async (e) => {
     const r = await api.setSystemProxy(e.target.checked);
-    if (!r.ok) { toast(r.error || '设置系统代理失败', true); e.target.checked = !e.target.checked; }
-    else { e.target.checked = !!r.enabled; toast(r.enabled ? '已接管系统代理' : '已关闭系统代理'); }
+    if (!r.ok) { toast(r.error || '设置系统代理失败', true); e.target.checked = !r.enabled; }
+    else {
+      e.target.checked = !!r.enabled;
+      if (state && state.running) toast(r.enabled ? '已接管系统代理' : '已还原系统代理');
+      else toast(r.enabled ? '已开启自动设置，下次启动代理时生效' : '已关闭自动设置');
+    }
   });
   els.startBtn.addEventListener('click', async () => {
     if (dirty && !confirm('有未保存的改动，启动前请先保存。仍要继续启动？')) return;
@@ -708,6 +738,15 @@ async function init() {
   checkLines = (s.checkLines || []).slice();
   renderState(s);
   renderLogTail();
+  // 首次使用：没有服务器时自动创建并弹命名框（对齐 macOS）
+  if (!s.servers.length) {
+    const r = await api.addServer();
+    if (r.ok) {
+      const s2 = await api.getState();
+      renderState(s2);
+      openRename(r.server);
+    }
+  }
   await api.subscribeKernelLogs(true);
 }
 

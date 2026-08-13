@@ -66,6 +66,9 @@ foreach ($d in @('geoip', 'geosite')) {
   }
 }
 
+# 构建时通过镜像下载 Electron 二进制与打包工具（npmmirror，国内加速）
+$env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+$env:ELECTRON_BUILDER_BINARIES_MIRROR = 'https://npmmirror.com/mirrors/electron-builder-binaries/'
 Write-Host "==> 3/3 打包 Electron 应用" -ForegroundColor Cyan
 Push-Location $GUI
 try {

@@ -358,6 +358,8 @@ async function startKernel() {
     logLine('[系统] 内核已就绪，本地代理运行中');
     refreshStatusText();
     broadcastState();
+    // 启动完成后自动静默自检一次（对齐 macOS：状态灯反映真实结果）
+    setTimeout(() => runSelfCheck(true), 1500);
   });
 
   broadcastState();
@@ -616,6 +618,65 @@ function probeHttpsViaSocks(socksPort, host, path, timeoutMs) {
       }).catch(e => finish(false, e.message));
     });
   });
+}
+
+// TCP 直连探测（预检用）
+function tcpProbe(host, port, timeoutMs) {
+  return new Promise(resolve => {
+    const net = require('net');
+    const sock = net.connect({ host, port });
+    const timer = setTimeout(() => { sock.destroy(); resolve(false); }, timeoutMs);
+    sock.on('connect', () => { clearTimeout(timer); sock.destroy(); resolve(true); });
+    sock.on('error', () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
+// 代理未运行时预检：服务端（或优选 IP）+ DoH 可达性
+async function runPreflight(server) {
+  const dialHost = String(server.ip || '').split(',')[0].trim() || cleanHost(server.server);
+  const failures = [];
+  const ok1 = await tcpProbe(dialHost, server.serverPort, 4000);
+  if (ok1) return { ok: true, detail: `服务端 ${dialHost}:${server.serverPort} 可达` };
+  failures.push(`服务端 ${dialHost}:${server.serverPort} 不可达`);
+  const dns = normalizeDoH(server.dns || '');
+  let dohHost = '';
+  if (/^https?:\/\//i.test(dns)) { try { dohHost = new URL(dns).host; } catch (e) {} }
+  if (dohHost) {
+    const ok2 = await tcpProbe(dohHost, 443, 4000);
+    if (ok2) return { ok: true, detail: `DoH ${dohHost}:443 可达（服务端不可达）` };
+    failures.push(`DoH ${dohHost}:443 不可达`);
+  }
+  return { ok: false, error: failures.join('；') };
+}
+
+// 自检统一入口（对齐 macOS runSelfCheck）
+// silent: 静默模式只更新状态灯，不写日志
+async function runSelfCheck(silent = false) {
+  if (checking) return { ok: false, error: '正在自检中' };
+  checking = true;
+  checkState = { phase: 'running', detail: '' };
+  broadcastState();
+  if (!silent) logLine('[自检] 开始检测…');
+
+  const server = selectedServer();
+  if (!server) {
+    checking = false;
+    checkState = { phase: 'idle', detail: '' };
+    if (!silent) logLine('[自检] 请先添加并选中服务器');
+    broadcastState();
+    return { ok: false, error: '请先添加并选中服务器' };
+  }
+
+  // 至少让"检测中"显示 800ms，灯一闪而过等于没有反馈
+  const minShow = new Promise(r => setTimeout(r, 800));
+  const result = isKernelRunning() ? await selfCheck(server.listenPort) : await runPreflight(server);
+  await minShow;
+
+  checking = false;
+  checkState = result.ok ? { phase: 'ok', detail: result.detail } : { phase: 'failed', detail: result.error };
+  if (!silent) logLine(result.ok ? `[自检] 通过: ${result.detail}` : `[自检] 失败: ${result.error}`);
+  broadcastState();
+  return result;
 }
 
 function selfCheck(port, timeoutMs = 10000) {
@@ -1095,11 +1156,22 @@ ipcMain.handle('restart', () => { stopKernel(); setTimeout(() => startKernel(), 
 
 ipcMain.handle('set-system-proxy', async (e, enabled) => {
   const server = selectedServer();
-  if (enabled && !server) return { ok: false, error: '请先选择服务器' };
-  if (enabled && !isKernelRunning()) return { ok: false, error: '代理未运行，无法接管系统代理' };
-  const r = await setSystemProxyEnabled(enabled, server ? server.listenPort : 0, false);
-  if (r.ok) { config.autoSystemProxy = enabled; saveConfig(); }
-  return r;
+  if (!server) return { ok: false, error: '请先选择服务器' };
+  config.autoSystemProxy = !!enabled;
+  saveConfig();
+  if (!isKernelRunning()) {
+    // 未运行：只保存配置，下次启动代理时生效（对齐 macOS）
+    logLine(enabled ? '[系统代理] 已开启自动设置，下次启动代理时生效' : '[系统代理] 已关闭自动设置');
+    broadcastState();
+    return { ok: true, enabled: !!enabled };
+  }
+  const r = await setSystemProxyEnabled(!!enabled, server.listenPort, false);
+  if (r.ok) {
+    logLine(enabled ? '[系统代理] 已接管系统代理' : '[系统代理] 已还原系统代理');
+    broadcastState();
+    return { ok: true, enabled: !!enabled };
+  }
+  return { ok: false, enabled: !!enabled, error: r.error || '设置系统代理失败' };
 });
 
 ipcMain.handle('get-system-proxy-summary', async () => ({ summary: await systemProxySummary() }));
@@ -1219,31 +1291,7 @@ ipcMain.handle('set-config', (e, patch) => {
 
 ipcMain.handle('check-updates', async () => checkUpdates());
 
-ipcMain.handle('self-check', async () => {
-  const server = selectedServer();
-  if (!server) return { ok: false, error: '请先选择服务器' };
-  if (checking) return { ok: false, error: '正在自检中' };
-  checking = true;
-  checkState = { phase: 'running', detail: '' };
-  broadcastState();
-  if (isKernelRunning()) {
-    logLine('[自检] 开始通过本地代理探测连通性...');
-    const r = await selfCheck(server.listenPort);
-    checking = false;
-    checkState = r.ok ? { phase: 'ok', detail: r.detail } : { phase: 'failed', detail: r.error };
-    logLine(r.ok ? `[自检] 通过: ${r.detail}` : `[自检] 失败: ${r.error}`);
-    broadcastState();
-    return r;
-  }
-  // 未运行时：预检服务端 / DoH 可达性（TCP 直连探测）
-  const checks = [];
-  checks.push(`服务端 ${server.server}:${server.serverPort}`);
-  checking = false;
-  checkState = { phase: 'failed', detail: '代理未运行，无法完整自检（仅可预检）' };
-  logLine('[自检] 代理未运行，跳过连通性探测');
-  broadcastState();
-  return { ok: false, error: '代理未运行，无法自检（启动代理后可完整自检）' };
-});
+ipcMain.handle('self-check', async () => runSelfCheck(false));
 
 ipcMain.handle('reveal-logs', () => {
   shell.openPath(logDir);
