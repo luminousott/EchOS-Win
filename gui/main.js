@@ -485,36 +485,94 @@ async function setAutoLaunch(enabled) {
   }
 }
 
-// ======================= 自检 =======================
-function selfCheck(port, timeoutMs = 8000) {
-  return new Promise(resolve => {
-    const servers = [
-      { host: 'www.gstatic.com', path: '/generate_204', expectStatus: 204 },
-      { host: 'cp.cloudflare.com', path: '/', expectStatus: 200 }
-    ];
-    let idx = 0;
-    const tryNext = () => {
-      if (idx >= servers.length) return resolve({ ok: false, error: '所有测试站点均未通过代理连通' });
-      const s = servers[idx++];
-      const req = http.request({
-        host: '127.0.0.1', port,
-        method: 'GET', path: s.path,
-        headers: { Host: s.host, Connection: 'close' },
-        timeout: timeoutMs / servers.length
-      }, res => {
-        res.resume();
-        if (res.statusCode === s.expectStatus || (s.expectStatus === 200 && res.statusCode === 204)) {
-          resolve({ ok: true, detail: `${s.host} -> HTTP ${res.statusCode}` });
-        } else {
-          tryNext();
-        }
-      });
-      req.on('timeout', () => { req.destroy(); tryNext(); });
-      req.on('error', () => { tryNext(); });
-      req.end();
-    };
-    tryNext();
+// ======================= 自检（SOCKS5 + TLS 隧道） =======================
+// 与 macOS 版一致：通过本地 SOCKS5 代理建立 CONNECT 隧道后再走 TLS，
+// 用 HEAD 请求探测 HTTPS 端点（generate_204 等），避免明文 HTTP 访问 HTTPS 站点。
+const net = require('net');
+const tls = require('tls');
+
+function socks5Handshake(sock, host, port) {
+  return new Promise((resolve, reject) => {
+    let stage = 0; // 0=greet, 1=connect
+    sock.once('data', function onData(d) {
+      if (stage === 0) {
+        stage = 1;
+        if (d.length < 2 || d[1] === 0xff) return reject(new Error('SOCKS5 无可用认证方式（代理需要认证）'));
+        const hostBuf = Buffer.from(host, 'utf8');
+        const portBuf = Buffer.from([port >> 8, port & 0xff]);
+        const req = Buffer.concat([
+          Buffer.from([0x05, 0x01, 0x00, 0x03, hostBuf.length]), hostBuf, portBuf
+        ]);
+        sock.write(req);
+        sock.once('data', onData);
+        return;
+      }
+      if (d.length < 2 || d[1] !== 0x00) {
+        return reject(new Error('SOCKS5 CONNECT 失败（code=' + (d[1] || '?') + '）'));
+      }
+      resolve();
+    });
+    sock.write(Buffer.from([0x05, 0x01, 0x00])); // 版本5，1种方法，无认证
   });
+}
+
+function probeHttpsViaSocks(socksPort, host, path, timeoutMs) {
+  return new Promise(resolve => {
+    const sock = net.connect({ host: '127.0.0.1', port: socksPort });
+    let done = false;
+    const finish = (ok, detail) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch (e) {}
+      resolve({ ok, detail });
+    };
+    sock.setTimeout(timeoutMs);
+    sock.on('timeout', () => finish(false, '连接超时'));
+    sock.on('error', e => finish(false, e.message));
+    sock.on('connect', () => {
+      socks5Handshake(sock, host, 443).then(() => {
+        const tlsSock = tls.connect({ socket: sock, servername: host, rejectUnauthorized: false });
+        tlsSock.on('error', e => finish(false, 'TLS: ' + e.message));
+        tlsSock.on('secureConnect', () => {
+          tlsSock.write(`HEAD ${path} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`);
+          let buf = '';
+          tlsSock.on('data', d => {
+            buf += d.toString('latin1');
+            const idx = buf.indexOf('\r\n\r\n');
+            if (idx >= 0) {
+              const m = buf.slice(0, idx).match(/^HTTP\/1\.[01]\s+(\d+)/);
+              const code = m ? parseInt(m[1], 10) : 0;
+              finish(code > 0, 'HTTP ' + code);
+            }
+          });
+          tlsSock.on('close', () => finish(false, '连接被关闭'));
+        });
+      }).catch(e => finish(false, e.message));
+    });
+  });
+}
+
+function selfCheck(port, timeoutMs = 10000) {
+  const sites = [
+    { host: 'www.gstatic.com', path: '/generate_204' },
+    { host: 'cp.cloudflare.com', path: '/' }
+  ];
+  // 多站点 + 失败重试（间隔 1s、3s），避免一次网络抖动误判
+  return (async () => {
+    const failures = [];
+    let lastDetail = '';
+    const attempts = [0, 1, 3];
+    for (const gap of attempts) {
+      if (gap > 0) await new Promise(r => setTimeout(r, gap * 1000));
+      for (const s of sites) {
+        const r = await probeHttpsViaSocks(port, s.host, s.path, timeoutMs / 2);
+        if (r.ok) return { ok: true, detail: `${s.host} · ${r.detail}` };
+        failures.push(`${s.host}：${r.detail}`);
+        lastDetail = r.detail;
+      }
+    }
+    return { ok: false, error: `所有测试站点均未通过代理连通（${failures.join('；')}）` };
+  })();
 }
 
 // ======================= 更新检查 =======================
