@@ -1320,6 +1320,68 @@ const CF_UA = 'v2rayN/edgetunnel (https://github.com/cmliu/edgetunnel)';
 const PH_UUID = '00000000-0000-4000-8000-000000000000';
 const PH_HOST = 'example.com';
 
+// 请求汇聚器：代理运行时走本地 HTTP 代理（CONNECT 隧道）访问被墙源，未运行时直连
+function fetchViaProxy(urlStr, headers = {}, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(urlStr); } catch (e) { return reject(e); }
+    const server = selectedServer();
+    const proxyPort = (isKernelRunning() && server) ? (server.listenPort + 1) : null;
+    const isHttps = u.protocol === 'https:';
+
+    // 无代理或非 https：直连
+    if (!proxyPort || !isHttps) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      fetch(urlStr, { signal: ctrl.signal, headers })
+        .then(r => r.text().then(text => ({ status: r.status, text })))
+        .catch(reject)
+        .finally(() => clearTimeout(t));
+      return;
+    }
+
+    // 通过本地 HTTP 代理 CONNECT 隧道
+    const net = require('net');
+    const tls = require('tls');
+    const sock = net.connect(proxyPort, '127.0.0.1');
+    const timer = setTimeout(() => { sock.destroy(); reject(new Error('代理连接超时')); }, timeoutMs);
+    sock.on('error', e => { clearTimeout(timer); reject(e); });
+    sock.on('connect', () => {
+      sock.write(`CONNECT ${u.hostname}:443 HTTP/1.1\r\nHost: ${u.hostname}:443\r\n\r\n`);
+      let buf = '';
+      const onData = (d) => {
+        buf += d.toString('latin1');
+        const idx = buf.indexOf('\r\n\r\n');
+        if (idx < 0) return;
+        const head = buf.slice(0, idx);
+        sock.removeListener('data', onData);
+        if (!/^HTTP\/1\.[01] 200/i.test(head)) {
+          clearTimeout(timer); sock.destroy();
+          return reject(new Error('代理 CONNECT 失败: ' + head.split('\r\n')[0]));
+        }
+        const tlsSock = tls.connect({ socket: sock, servername: u.hostname, rejectUnauthorized: false });
+        tlsSock.on('error', e => { clearTimeout(timer); reject(e); });
+        tlsSock.on('secureConnect', () => {
+          clearTimeout(timer);
+          const req = `GET ${u.pathname + u.search} HTTP/1.1\r\nHost: ${u.hostname}\r\nUser-Agent: ${headers['User-Agent'] || ''}\r\nConnection: close\r\n\r\n`;
+          tlsSock.write(req);
+          let resp = '';
+          tlsSock.on('data', d => {
+            resp += d.toString('latin1');
+            const hi = resp.indexOf('\r\n\r\n');
+            if (hi < 0) return;
+            const head2 = resp.slice(0, hi);
+            const m = head2.match(/^HTTP\/1\.[01] (\d+)/);
+            resolve({ status: m ? parseInt(m[1], 10) : 0, text: resp.slice(hi + 4) });
+            tlsSock.destroy();
+          });
+        });
+      };
+      sock.on('data', onData);
+    });
+  });
+}
+
 // 从优选订阅生成器（sub:// 或域名）拉取优选 IP
 // 对应 _worker.js 的 获取优选订阅生成器数据：请求 /sub?host=example.com&uuid=00000000-...，
 // 响应为 base64 订阅，其中含占位符 uuid/host 的行即"优选 IP 行"，提取 host:port（含 #备注）
@@ -1334,7 +1396,7 @@ async function fetchFromSubGenerator(source) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
-    const resp = await fetch(subUrl, { signal: ctrl.signal, headers: { 'User-Agent': CF_UA } });
+    const resp = await fetchViaProxy(subUrl, { 'User-Agent': CF_UA }, 8000);
     clearTimeout(t);
     if (!resp.ok) {
       logLine(`[优选] ${subUrl} 返回 HTTP ${resp.status}`);
