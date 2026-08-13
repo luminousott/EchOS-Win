@@ -56,14 +56,16 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "EchOS"
+      "shortcutName": "EchOS-Win",
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}"
     }
   }
 }

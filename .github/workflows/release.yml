@@ -91,12 +91,18 @@ jobs:
             fi
           fi
           {
-            echo "## EchOS $TAG"
+            echo "## EchOS-Win $TAG"
             echo ""
             echo "macOS 13.0+，Intel 与 Apple Silicon 通用。"
             echo ""
             echo "- 下载 \`EchOS-mac-*-universal-x64.dmg\` 后拖入 Applications"
             echo "- 无 Apple 开发者签名，首次打开需右键 → 打开（Gatekeeper）"
+            echo ""
+            echo "Windows 10/11 x64："
+            echo ""
+            echo "- \`EchOS-Win-*-x64.exe\` 免安装便携版，双击直接运行"
+            echo "- \`EchOS-Win-*-x64-setup.exe\` NSIS 安装包"
+            echo "- \`SHA256SUMS.txt\` 校验和文件"
             echo ""
             echo "$NOTES"
           } > RELEASE_BODY.md
@@ -108,7 +114,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.ver.outputs.TAG }}
-          name: EchOS ${{ steps.ver.outputs.TAG }}
+          name: EchOS-Win ${{ steps.ver.outputs.TAG }}
           body_path: RELEASE_BODY.md
           files: EchOS-mac-*.dmg
 
@@ -163,10 +169,20 @@ jobs:
         shell: pwsh
         run: Get-ChildItem -Recurse build\installer -ErrorAction SilentlyContinue | Select-Object FullName, Length
 
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem build\installer\*.exe | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Add-Content -Path build\installer\SHA256SUMS.txt -Encoding ascii
+          }
+          Get-Content build\installer\SHA256SUMS.txt
+
       - name: Upload Windows installers to release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.ver.outputs.TAG }}
           files: |
             build/installer/*.exe
+            build/installer/SHA256SUMS.txt
           fail_on_unmatched_files: false

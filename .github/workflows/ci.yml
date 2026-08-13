@@ -1,0 +1,55 @@
+name: CI
+
+# 每次 push 到 main 或 Pull Request 时自动构建验证，并上传构建产物
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows (kernel + Electron)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+          cache-dependency-path: core/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Fetch geo data
+        run: bash fetch-geodata.sh
+
+      - name: Build (Go kernel + Electron portable/NSIS)
+        run: .\build.ps1
+
+      - name: Generate SHA256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem build\installer\*.exe -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)" | Add-Content -Path build\installer\SHA256SUMS.txt -Encoding ascii
+          }
+          Get-Content build\installer\SHA256SUMS.txt -ErrorAction SilentlyContinue
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchOS-Win-build
+          path: |
+            build/installer/*.exe
+            build/installer/SHA256SUMS.txt
+          if-no-files-found: warn
