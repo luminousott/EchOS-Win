@@ -80,7 +80,8 @@ const els = {
   launchSwitch: $('launchSwitch'), sysProxySwitch: $('sysProxySwitch'),
   startBtn: $('startBtn'), stopBtn: $('stopBtn'),
   statusDot: $('statusDot'), statusText: $('statusText'), checkLabel: $('checkLabel'), proxySummary: $('proxySummary'),
-  updateBtn: $('updateBtn'), settingsBtn: $('settingsBtn'), settingsMenu: $('settingsMenu'), diagLogSwitch: $('diagLogSwitch'),
+  updateBtn: $('updateBtn'), settingsBtn: $('settingsBtn'), settingsMenu: $('settingsMenu'),
+  diagLogSwitch: $('diagLogSwitch'), logPanelSwitch: $('logPanelSwitch'),
   logPanel: $('logPanel'),
   logToggle: $('logToggle'), logChevron: $('logChevron'), logTitle: $('logTitle'),
   logLevelSelect: $('logLevelSelect'), logFileBtn: $('logFileBtn'), clearLogBtn: $('clearLogBtn'),
@@ -270,6 +271,8 @@ function renderState(s) {
   els.logPanel.style.display = els.logPanelVisible ? 'flex' : 'none';
   els.logChevron.textContent = els.logPanelVisible ? '▾' : '▸';
   els.logTitle.textContent = s.logLevel === 'checkOnly' ? '自检记录' : '运行日志';
+  els.diagLogSwitch.checked = !!s.showDiagnosticLogs;
+  els.logPanelSwitch.checked = els.logPanelVisible;
 
   // 分流模式分段
   els.modeSeg.querySelectorAll('.seg-btn').forEach(b => {
@@ -313,6 +316,21 @@ function renderStatus() {
 }
 
 // ======================= 日志 =======================
+// 与主进程 kernelLogFilter 一致：级别 + 诊断日志开关
+function shouldShowLog(line, lvl, showDiag) {
+  if (!showDiag && /\[DNS-DIAG\]|\[诊断\]/i.test(line)) return false;
+  if (lvl === 'off') return false;
+  if (lvl === 'error') return /失败|错误|error|fatal/i.test(line);
+  if (lvl === 'warning') return /失败|错误|error|fatal|warn|警告/i.test(line);
+  if (lvl === 'checkOnly') return false;
+  return true;
+}
+function filterLogs(list) {
+  const lvl = state ? state.logLevel : 'info';
+  const diag = state ? !!state.showDiagnosticLogs : false;
+  return list.filter(l => shouldShowLog(l, lvl, diag));
+}
+
 function appendLog(line) {
   logs.push(line);
   if (logs.length > 2000) logs.splice(0, logs.length - 2000);
@@ -520,7 +538,17 @@ function bindEvents() {
     showUpdateDialog(r);
   });
   els.settingsBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(els.settingsMenu); });
-  els.diagLogSwitch.addEventListener('change', (e) => api.setConfig({ showDiagnosticLogs: e.target.checked }));
+  els.diagLogSwitch.addEventListener('change', async (e) => {
+    await api.setConfig({ showDiagnosticLogs: e.target.checked });
+    const s = await api.getState();
+    state = s;
+    logs = filterLogs(s.logs || []);
+    renderLogTail();
+  });
+  els.logPanelSwitch.addEventListener('change', async (e) => {
+    await api.setConfig({ logVisible: e.target.checked });
+    const s = await api.getState(); renderState(s);
+  });
   document.querySelectorAll('#settingsMenu .menu-item').forEach(item => {
     item.addEventListener('click', () => {
       if (item.dataset.act === 'reveal-logs') api.revealLogs();
@@ -670,7 +698,11 @@ function bindEvents() {
   });
   els.logLevelSelect.addEventListener('change', async (e) => {
     await api.setConfig({ logLevel: e.target.value });
-    const s = await api.getState(); renderState(s);
+    const s = await api.getState();
+    state = s;
+    logs = filterLogs(s.logs || []);
+    renderState(s);
+    renderLogTail();
   });
   els.logFileBtn.addEventListener('click', () => api.revealLogs());
   els.clearLogBtn.addEventListener('click', async () => { await api.clearLogs(); clearLogsUI(); });
@@ -720,7 +752,6 @@ async function init() {
   bindEvents();
 
   api.onState(s => { renderState(s); renderLogTail(); });
-  api.onLogLine(l => appendLog(l));
   api.onKernelLog(l => appendLog(l));
   api.onCheckLine(l => appendCheckLine(l));
   api.onUpdateAvailable(r => showUpdateDialog(r));
@@ -734,7 +765,8 @@ async function init() {
   api.onToastMsg(r => { if (r && r.msg) toast(r.msg); });
 
   const s = await api.getState();
-  logs = (s.logs || []).slice();
+  state = s;
+  logs = filterLogs(s.logs || []);
   checkLines = (s.checkLines || []).slice();
   renderState(s);
   renderLogTail();

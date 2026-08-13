@@ -153,13 +153,16 @@ function logLine(text) {
     ensureLogFile();
     logFileHandle.write(line + '\n');
   } catch (e) {}
-  if (win && !win.isDestroyed()) {
-    win.webContents.send('log-line', line);
+  // 界面只接收过滤后的行（对齐 macOS：文件留全量，界面按级别/诊断开关过滤）
+  if (win && !win.isDestroyed() && kernelLogFilter(line)) {
+    win.webContents.send('kernel-log', line);
   }
 }
 
 // 日志分级过滤：内核日志级别
 function kernelLogFilter(line) {
+  // 诊断日志开关：关闭时过滤 DNS-DIAG 等诊断行
+  if (!config.showDiagnosticLogs && /\[DNS-DIAG\]|\[诊断\]/i.test(line)) return false;
   const lvl = config.logLevel || 'info';
   if (lvl === 'off') return false;
   if (lvl === 'error') return /失败|错误|error|fatal/i.test(line);
@@ -417,9 +420,6 @@ function onKernelOutput(text) {
   const lines = text.split(/\r?\n/).filter(Boolean);
   for (const line of lines) {
     logLine(line);
-    if (kernelLogSink) {
-      try { kernelLogSink(line); } catch (e) {}
-    }
   }
 }
 
