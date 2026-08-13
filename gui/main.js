@@ -352,7 +352,7 @@ async function startKernel() {
     }
     isStarting = false;
     if (config.autoSystemProxy) {
-      const r = setSystemProxyEnabled(true, server.listenPort, false);
+      const r = setSystemProxyEnabled(true, server.listenPort + 1, false);
       if (!r.ok) logLine(`[系统] 接管系统代理失败: ${r.error}`);
     }
     logLine('[系统] 内核已就绪，本地代理运行中');
@@ -1165,7 +1165,7 @@ ipcMain.handle('set-system-proxy', async (e, enabled) => {
     broadcastState();
     return { ok: true, enabled: !!enabled };
   }
-  const r = await setSystemProxyEnabled(!!enabled, server.listenPort, false);
+  const r = await setSystemProxyEnabled(!!enabled, server.listenPort + 1, false);
   if (r.ok) {
     logLine(enabled ? '[系统代理] 已接管系统代理' : '[系统代理] 已还原系统代理');
     broadcastState();
