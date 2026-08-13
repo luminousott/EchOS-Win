@@ -1354,28 +1354,19 @@ async function fetchFromSubGenerator(source) {
 
 // 汇聚节点优选：优选 IP/域名 直接加入；汇聚器（sub://、域名、URL）按上述逻辑拉取
 ipcMain.handle('fetch-cf-nodes', async (e, inputs) => {
+  // 只处理"优选汇聚器"输入（sub://、域名、URL），统一按 _worker.js 优选订阅生成器逻辑
+  // 拉取优选 IP（请求 /sub?host=example.com&uuid=00000000-...，特定 UA，base64 解码提取）。
+  // 直接填写的优选 IP/域名由前端"优选 IP/域名"输入框单独处理，不走这里。
   const list = (Array.isArray(inputs) ? inputs : [inputs])
     .map(u => String(u || '').trim()).filter(Boolean).slice(0, 10);
   const nodes = new Set();
   for (const raw of list) {
-    const lower = raw.toLowerCase();
-    // 直接是 IP / 域名（不含协议头、不带路径）
-    if (!lower.includes('://') && !lower.includes('/') && /^[0-9a-zA-Z][0-9a-zA-Z.\-]*$/.test(raw) && raw.includes('.')) {
-      nodes.add(raw);
-      continue;
-    }
-    // 带端口：IP:443 / host:443（不带协议头）
-    if (!lower.includes('://') && /^[0-9a-zA-Z][0-9a-zA-Z.\-]*:\d+$/.test(raw)) {
-      nodes.add(raw.split(':')[0]);
-      continue;
-    }
-    // 汇聚器：sub:// 或 域名 或 URL —— 先按优选订阅生成器接口拉取
     const ips = await fetchFromSubGenerator(raw);
     if (ips.length) {
       for (const ip of ips) nodes.add(ip.split('#')[0].split(':')[0]);
       continue;
     }
-    // 备用：直接请求该地址，解析内容提取节点
+    // 备用：直接请求该地址，解析内容提取节点（非汇聚器的普通优选源）
     const url = /^https?:\/\//i.test(raw) ? raw : 'https://' + raw;
     try {
       const ctrl = new AbortController();
