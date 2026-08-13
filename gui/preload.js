@@ -32,7 +32,8 @@ contextBridge.exposeInMainWorld('echos', {
   pickFreePort: () => ipcRenderer.invoke('pick-free-port'),
   testNodes: () => ipcRenderer.invoke('test-nodes'),
   testHosts: (hosts) => ipcRenderer.invoke('test-hosts', hosts),
-  fetchCfNodes: (apiUrls) => ipcRenderer.invoke('fetch-cf-nodes', apiUrls),
+  fetchCfNodes: (apiUrls, useDirect) => ipcRenderer.invoke('fetch-cf-nodes', apiUrls, useDirect),
+  saveCfNodes: (nodes) => ipcRenderer.invoke('save-cf-nodes', nodes),
 
   // WebDAV / 备份
   getWebdav: () => ipcRenderer.invoke('get-webdav'),

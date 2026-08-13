@@ -93,8 +93,9 @@ const DEFAULT_CONFIG = {
   logVisible: true,
   autoLaunch: false,
   webdav: null,
-  cfApiUrls: [],      // 汇聚节点优选：优选汇聚器列表（如 zrf.zrf.me）
-  cfIpList: []        // 汇聚节点优选：手动优选 IP / 域名列表
+  cfApiUrls: [],        // 汇聚节点优选：优选汇聚器列表（如 zrf.zrf.me）
+  cfIpList: [],         // 汇聚节点优选：手动优选 IP / 域名列表
+  cfFetchedNodes: []    // 汇聚节点优选：上次获取并持久化的节点（host 列表），直到下次获取才刷新
 };
 
 let config = loadConfig();
@@ -1166,6 +1167,7 @@ function getPublicState() {
     showDiagnosticLogs: config.showDiagnosticLogs,
     cfApiUrls: config.cfApiUrls || [],
     cfIpList: config.cfIpList || [],
+    cfFetchedNodes: config.cfFetchedNodes || [],
     webdav: config.webdav ? { url: config.webdav.url, username: config.webdav.username, directory: config.webdav.directory, hasPassword: !!(config.webdav.passwordEnc || config.webdav.password) } : null,
     kernelExists: fs.existsSync(kernelPath),
     kernelPath: kernelPath,
@@ -1337,15 +1339,18 @@ async function getSystemProxyEndpoint() {
 
 // 请求汇聚器：优先走 EchOS 本地代理（运行中），其次系统代理（外部全局代理），最后直连。
 // 通过 HTTP 代理 CONNECT 隧道访问被墙源。
-async function fetchViaProxy(urlStr, headers = {}, timeoutMs = 8000) {
+async function fetchViaProxy(urlStr, headers = {}, timeoutMs = 8000, useDirect = false) {
   return new Promise(async (resolve, reject) => {
     let u;
     try { u = new URL(urlStr); } catch (e) { return reject(e); }
     // 代理优先级：EchOS 本地代理（运行中）> Windows 系统代理（外部全局代理）> 直连
+    // useDirect=true 时强制直连（不走任何代理）
     let proxy = null;
-    const server = selectedServer();
-    if (isKernelRunning() && server) proxy = { host: '127.0.0.1', port: server.listenPort + 1 };
-    if (!proxy) proxy = await getSystemProxyEndpoint();
+    if (!useDirect) {
+      const server = selectedServer();
+      if (isKernelRunning() && server) proxy = { host: '127.0.0.1', port: server.listenPort + 1 };
+      if (!proxy) proxy = await getSystemProxyEndpoint();
+    }
     const isHttps = u.protocol === 'https:';
 
     // 无代理或非 https：直连
@@ -1384,15 +1389,39 @@ async function fetchViaProxy(urlStr, headers = {}, timeoutMs = 8000) {
           clearTimeout(timer);
           const req = `GET ${u.pathname + u.search} HTTP/1.1\r\nHost: ${u.hostname}\r\nUser-Agent: ${headers['User-Agent'] || ''}\r\nConnection: close\r\n\r\n`;
           tlsSock.write(req);
+          // 完整接收响应体：按 Content-Length 判定，或等连接关闭（body 可能分多个网络包）
           let resp = '';
+          let headerDone = false, contentLength = -1, bodyStart = 0, status = 0, resolved = false;
+          const finish = (text) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(timer);
+            resolve({ status, text });
+          };
           tlsSock.on('data', d => {
             resp += d.toString('latin1');
-            const hi = resp.indexOf('\r\n\r\n');
-            if (hi < 0) return;
-            const head2 = resp.slice(0, hi);
-            const m = head2.match(/^HTTP\/1\.[01] (\d+)/);
-            resolve({ status: m ? parseInt(m[1], 10) : 0, text: resp.slice(hi + 4) });
-            tlsSock.destroy();
+            if (!headerDone) {
+              const hi = resp.indexOf('\r\n\r\n');
+              if (hi >= 0) {
+                headerDone = true;
+                const head2 = resp.slice(0, hi);
+                const m = head2.match(/^HTTP\/1\.[01] (\d+)/);
+                status = m ? parseInt(m[1], 10) : 0;
+                const cl = head2.match(/content-length:\s*(\d+)/i);
+                contentLength = cl ? parseInt(cl[1], 10) : -1;
+                bodyStart = hi + 4;
+              }
+            }
+            if (headerDone) {
+              const bodyLen = resp.length - bodyStart;
+              if (contentLength >= 0 && bodyLen >= contentLength) {
+                finish(resp.slice(bodyStart, bodyStart + contentLength));
+                tlsSock.destroy();
+              }
+            }
+          });
+          tlsSock.on('close', () => {
+            if (headerDone && !resolved) finish(resp.slice(bodyStart));
           });
         });
       };
@@ -1404,7 +1433,7 @@ async function fetchViaProxy(urlStr, headers = {}, timeoutMs = 8000) {
 // 从优选订阅生成器（sub:// 或域名）拉取优选 IP
 // 对应 _worker.js 的 获取优选订阅生成器数据：请求 /sub?host=example.com&uuid=00000000-...，
 // 响应为 base64 订阅，其中含占位符 uuid/host 的行即"优选 IP 行"，提取 host:port（含 #备注）
-async function fetchFromSubGenerator(source) {
+async function fetchFromSubGenerator(source, useDirect = false) {
   const ips = [];
   let base = String(source || '').trim().replace(/^sub:\/\//i, 'https://').split('#')[0].split('?')[0];
   if (!/^https?:\/\//i.test(base)) base = 'https://' + base;
@@ -1414,7 +1443,7 @@ async function fetchFromSubGenerator(source) {
   logLine(`[优选] 汇聚器 "${source}" -> 请求 ${subUrl}`);
   try {
     // fetchViaProxy 返回 { status, text }
-    const r = await fetchViaProxy(subUrl, { 'User-Agent': CF_UA }, 8000);
+    const r = await fetchViaProxy(subUrl, { 'User-Agent': CF_UA }, 8000, useDirect);
     if (!r || r.status < 200 || r.status >= 300) {
       logLine(`[优选] ${subUrl} 返回 HTTP ${r ? r.status : '未知'}`);
       return ips;
@@ -1442,7 +1471,7 @@ async function fetchFromSubGenerator(source) {
 }
 
 // 汇聚节点优选：优选 IP/域名 直接加入；汇聚器（sub://、域名、URL）按上述逻辑拉取
-ipcMain.handle('fetch-cf-nodes', async (e, inputs) => {
+ipcMain.handle('fetch-cf-nodes', async (e, inputs, useDirect) => {
   // 只处理"优选汇聚器"输入（sub://、域名、URL），统一按 _worker.js 优选订阅生成器逻辑
   // 拉取优选 IP（请求 /sub?host=example.com&uuid=00000000-...，特定 UA，base64 解码提取）。
   // 直接填写的优选 IP/域名由前端"优选 IP/域名"输入框单独处理，不走这里。
@@ -1450,7 +1479,7 @@ ipcMain.handle('fetch-cf-nodes', async (e, inputs) => {
     .map(u => String(u || '').trim()).filter(Boolean).slice(0, 10);
   const nodes = new Set();
   for (const raw of list) {
-    const ips = await fetchFromSubGenerator(raw);
+    const ips = await fetchFromSubGenerator(raw, !!useDirect);
     if (ips.length) {
       for (const ip of ips) nodes.add(ip.split('#')[0].split(':')[0]);
       continue;
@@ -1469,6 +1498,14 @@ ipcMain.handle('fetch-cf-nodes', async (e, inputs) => {
   }
   logLine(`[优选] 汇聚器输入 [${list.join(', ')}]，共提取 ${nodes.size} 个节点`);
   return { ok: true, nodes: [...nodes].slice(0, 100) };
+});
+
+// 持久化保存上次获取的优选节点（直到下一次获取才刷新）
+ipcMain.handle('save-cf-nodes', (e, nodes) => {
+  config.cfFetchedNodes = (Array.isArray(nodes) ? nodes : []).slice(0, 100);
+  saveConfig();
+  broadcastState();
+  return { ok: true };
 });
 
 ipcMain.handle('import-servers', (e, list) => importServers(list));

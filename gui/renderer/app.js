@@ -568,15 +568,17 @@ async function showCfNodeTest() {
       <div style="display:flex;gap:8px;margin-top:6px">
         <button id="cfFetchBtn" class="btn small primary">获取并测速</button>
         <button id="cfSaveBtn" class="btn small">保存配置</button>
+        <label class="chk" style="margin-left:auto"><input type="checkbox" id="cfDirectChk"> 直连获取</label>
       </div>
       <div class="node-list" id="cfNodeList"></div>
     </div>
     <div class="modal-foot"><button class="btn" data-act="close">关闭</button></div>`);
 
-  const doTest = async (hosts) => {
+  const doTest = async (hosts, save = false) => {
     if (!hosts.length) { toast('请先填写优选 IP/域名或汇聚器', true); return; }
     toast(`正在对 ${hosts.length} 个节点测速…`);
     renderCfNodeList(await runCfNodeSpeedTest(hosts));
+    if (save) await api.saveCfNodes(hosts); // 持久化，直到下一次获取才刷新
   };
 
   document.getElementById('cfFetchBtn').addEventListener('click', async () => {
@@ -590,7 +592,8 @@ async function showCfNodeTest() {
     let aggFailed = false;
     if (aggs.length) {
       toast('正在从汇聚器拉取优选节点…');
-      const fr = await api.fetchCfNodes(aggs);
+      const useDirect = document.getElementById('cfDirectChk').checked;
+      const fr = await api.fetchCfNodes(aggs, useDirect);
       if (fr && fr.nodes && fr.nodes.length) hosts = [...new Set([...hosts, ...fr.nodes])];
       else aggFailed = true;
     }
@@ -599,8 +602,7 @@ async function showCfNodeTest() {
       return;
     }
     if (aggFailed) toast('汇聚器未返回节点，仅对已填 IP/域名测速');
-    toast(`正在对 ${hosts.length} 个节点测速…`);
-    renderCfNodeList(await runCfNodeSpeedTest(hosts));
+    await doTest(hosts, true);
   });
 
   document.getElementById('cfSaveBtn').addEventListener('click', async () => {
@@ -611,6 +613,11 @@ async function showCfNodeTest() {
   });
 
   if (savedIps.length) doTest(savedIps);
+  // 打开弹窗：加载上次持久化的节点（直到下一次获取前一直可用）
+  else if ((state && state.cfFetchedNodes && state.cfFetchedNodes.length)) {
+    toast(`已加载上次获取的 ${state.cfFetchedNodes.length} 个节点，可点「获取并测速」刷新`);
+    doTest(state.cfFetchedNodes);
+  }
 }
 // ======================= 事件绑定 =======================
 function bindEvents() {
@@ -834,9 +841,11 @@ function bindEvents() {
       case 'cf-pick': {
         const item = e.target.closest('.node-item');
         if (item && currentEdit) {
-          field('ip', item.dataset.host);
+          const host = item.dataset.host;
+          field('ip', host);
+          els.cfg_ip.value = host;   // 同步显示到主界面"优选 IP/域名"输入框
           closeModal();
-          toast('已选用节点 ' + item.dataset.host + '，记得点「保存」');
+          toast('已选用节点 ' + host + '，记得点「保存」');
         }
         break;
       }
