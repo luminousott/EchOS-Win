@@ -97,7 +97,10 @@ npm install -g wrangler
 wrangler login
 
 # 部署；需要鉴权时带上 TOKEN（值自定义，一长串随机字符）
+# macOS / Linux / Git Bash：
 TOKEN=你的密钥 ./deploy-worker.sh
+# Windows（cmd）：
+set TOKEN=你的密钥 && deploy-worker.bat
 ```
 
 `wrangler.toml` 里的 `name` 就是 Worker 名称，部署前可自行修改。
@@ -122,8 +125,7 @@ TOKEN=你的密钥 ./deploy-worker.sh
 
 ```powershell
 # 1) 下载分流规则数据（geoip.dat / geosite.dat，约 28MB 二进制，不进仓库）
-#    已装 Git Bash 可直接运行；或用任意方式下载 Loyalsoldier/v2ray-rules-dat 的 release
-bash fetch-geodata.sh
+.\fetch-geodata.bat          # Windows 原生脚本；已装 Git Bash 也可用 bash fetch-geodata.sh
 
 # 2) 一键构建：编译 Go 内核 + 打包 Electron 安装包
 .\build.ps1
@@ -146,7 +148,9 @@ bash fetch-geodata.sh
 EchOS-Win/
 ├── Worker-ECH.js          # Cloudflare Worker 服务端（完整代码）
 ├── wrangler.toml          # Worker 配置（名称、入口）
-├── deploy-worker.sh       # 一键部署脚本（wrangler CLI）
+├── deploy-worker.sh       # 一键部署脚本（wrangler CLI，macOS/Linux）
+├── deploy-worker.bat      # 一键部署脚本（wrangler CLI，Windows）
+├── fetch-geodata.bat      # 下载分流数据 geoip.dat / geosite.dat（Windows）
 ├── CHANGELOG.md           # 更新日志（发版时自动作为 Release 正文）
 ├── fetch-geodata.sh       # 下载分流数据 geoip.dat / geosite.dat
 ├── build.ps1              # Windows 一键构建脚本（内核 + Electron 打包）
