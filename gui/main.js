@@ -92,7 +92,9 @@ const DEFAULT_CONFIG = {
   routeMode: 'bypassCN',
   logVisible: true,
   autoLaunch: false,
-  webdav: null
+  webdav: null,
+  cfApiUrls: [],      // 自选 Cloudflare 节点：优选 API 地址列表
+  subscriptions: []   // 订阅器：订阅 URL 列表
 };
 
 let config = loadConfig();
@@ -631,6 +633,22 @@ function tcpProbe(host, port, timeoutMs) {
   });
 }
 
+// TCP 延迟探测（自选节点测速）
+function probeLatency(host, port, timeoutMs = 5000) {
+  return new Promise(resolve => {
+    const net = require('net');
+    const start = Date.now();
+    const sock = net.connect({ host, port });
+    const timer = setTimeout(() => { sock.destroy(); resolve({ ok: false, latency: -1 }); }, timeoutMs);
+    sock.on('connect', () => {
+      clearTimeout(timer);
+      sock.destroy();
+      resolve({ ok: true, latency: Date.now() - start });
+    });
+    sock.on('error', () => { clearTimeout(timer); resolve({ ok: false, latency: -1 }); });
+  });
+}
+
 // 代理未运行时预检：服务端（或优选 IP）+ DoH 可达性
 async function runPreflight(server) {
   const dialHost = String(server.ip || '').split(',')[0].trim() || cleanHost(server.server);
@@ -772,6 +790,158 @@ function sanitizeServer(raw) {
 }
 
 // 导入：只接收参数完整的服务器，重名自动改名
+// ======================= 订阅解析（vless/vmess/trojan/ss） =======================
+function base64DecodeSafe(s) {
+  try {
+    const b = Buffer.from(String(s).replace(/\s+/g, ''), 'base64');
+    const t = b.toString('utf8');
+    if (t.includes('\uFFFD')) return null;
+    return t;
+  } catch (e) { return null; }
+}
+
+// 订阅内容可能是 base64 整体编码，也可能是明文多行
+function decodeSubscription(text) {
+  let t = String(text || '').trim();
+  if (!t) return '';
+  if (!/^(vless|vmess|trojan|ss|hysteria2|hysteria|tuic):\/\//i.test(t)) {
+    const decoded = base64DecodeSafe(t);
+    if (decoded && /(vless|vmess|trojan|ss|hysteria2|hysteria|tuic):\/\//i.test(decoded)) t = decoded;
+  }
+  return t;
+}
+
+function parseVlessLine(line) {
+  try {
+    const u = new URL(line.trim());
+    if (u.protocol !== 'vless:') return null;
+    const token = decodeURIComponent(u.username || '');
+    const host = u.hostname;
+    const port = u.port ? parseInt(u.port, 10) : 443;
+    const name = u.hash ? decodeURIComponent(u.hash.slice(1)) : host;
+    return { name: name || host, server: host, serverPort: port, token, protocol: 'vless' };
+  } catch (e) { return null; }
+}
+
+function parseTrojanLine(line) {
+  try {
+    const u = new URL(line.trim());
+    if (u.protocol !== 'trojan:') return null;
+    const token = decodeURIComponent(u.username || '');
+    const host = u.hostname;
+    const port = u.port ? parseInt(u.port, 10) : 443;
+    const name = u.hash ? decodeURIComponent(u.hash.slice(1)) : host;
+    return { name: name || host, server: host, serverPort: port, token, protocol: 'trojan' };
+  } catch (e) { return null; }
+}
+
+function parseShadowsocksLine(line) {
+  try {
+    const s = line.trim();
+    if (!s.toLowerCase().startsWith('ss://')) return null;
+    const hashIdx = s.indexOf('#');
+    const name = hashIdx >= 0 ? decodeURIComponent(s.slice(hashIdx + 1)) : '';
+    let rest = hashIdx >= 0 ? s.slice(5, hashIdx) : s.slice(5);
+    rest = rest.split('?')[0];
+    let methodPass, hostPort;
+    if (rest.includes('@')) {
+      [methodPass, hostPort] = rest.split('@');
+    } else {
+      const decoded = base64DecodeSafe(rest);
+      if (!decoded) return null;
+      [methodPass, hostPort] = decoded.split('@');
+    }
+    if (!hostPort) return null;
+    const host = hostPort.split(':')[0];
+    const port = parseInt(hostPort.split(':')[1], 10) || 443;
+    // method:password 可能是 base64 整体编码（ss://base64(method:password)@host:port）
+    if (!methodPass.includes(':')) {
+      const d = base64DecodeSafe(methodPass);
+      if (d && d.includes(':')) methodPass = d;
+    }
+    const sep = methodPass.indexOf(':');
+    const password = sep >= 0 ? methodPass.slice(sep + 1) : methodPass;
+    return { name: name || host, server: host, serverPort: port, token: password, protocol: 'ss' };
+  } catch (e) { return null; }
+}
+
+function parseVmessLine(line) {
+  try {
+    const s = line.trim();
+    if (!s.toLowerCase().startsWith('vmess://')) return null;
+    const b64 = s.slice(8).split('?')[0];
+    const decoded = base64DecodeSafe(b64);
+    if (!decoded) return null;
+    const j = JSON.parse(decoded);
+    const host = j.add || j.host;
+    const port = parseInt(j.port, 10) || 443;
+    const name = j.ps || j.remarks || host;
+    const token = j.id || '';
+    return { name, server: host, serverPort: port, token, protocol: 'vmess' };
+  } catch (e) { return null; }
+}
+
+function parseSubscription(text) {
+  const t = decodeSubscription(text);
+  const nodes = [];
+  for (const raw of t.split(/\r?\n/)) {
+    const l = String(raw).trim();
+    if (!l) continue;
+    let node = null;
+    if (/^vless:\/\//i.test(l)) node = parseVlessLine(l);
+    else if (/^vmess:\/\//i.test(l)) node = parseVmessLine(l);
+    else if (/^trojan:\/\//i.test(l)) node = parseTrojanLine(l);
+    else if (/^ss:\/\//i.test(l)) node = parseShadowsocksLine(l);
+    if (node) nodes.push(node);
+  }
+  return nodes;
+}
+
+async function fetchSubscriptionContent(url) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const resp = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return { ok: true, text: await resp.text() };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// 订阅节点导入服务器列表（服务地址 + 端口相同视为重复，跳过）
+function importSubscriptionNodes(nodes) {
+  if (!Array.isArray(nodes)) return 0;
+  let added = 0;
+  for (const n of nodes) {
+    if (!n || !String(n.server || '').trim()) continue;
+    const port = parseInt(n.serverPort, 10);
+    if (!(port > 0 && port <= 65535)) continue;
+    const dup = config.servers.some(x =>
+      String(x.server || '').toLowerCase() === String(n.server).toLowerCase() && x.serverPort === port);
+    if (dup) continue;
+    let name = String(n.name || n.server).trim() || n.server;
+    const base = name;
+    const taken = new Set(config.servers.map(x => x.name));
+    let i = 1;
+    while (taken.has(name)) name = `${base} ${String(i++).padStart(2, '0')}`;
+    config.servers.push(Object.assign({}, DEFAULT_SERVER, {
+      id: genId(), name,
+      server: String(n.server).trim(),
+      serverPort: port,
+      token: String(n.token || ''),
+      ip: ''
+    }));
+    added++;
+  }
+  if (!config.selectedID && config.servers.length) config.selectedID = config.servers[0].id;
+  saveConfig();
+  broadcastState();
+  return added;
+}
+
 function importServers(list) {
   if (!Array.isArray(list)) return { ok: false, error: '导入数据格式错误' };
   let added = 0;
@@ -1137,6 +1307,8 @@ function getPublicState() {
     logVisible: config.logVisible,
     autoLaunch: config.autoLaunch,
     showDiagnosticLogs: config.showDiagnosticLogs,
+    cfApiUrls: config.cfApiUrls || [],
+    subscriptions: config.subscriptions || [],
     webdav: config.webdav ? { url: config.webdav.url, username: config.webdav.username, directory: config.webdav.directory, hasPassword: !!(config.webdav.passwordEnc || config.webdav.password) } : null,
     kernelExists: fs.existsSync(kernelPath),
     kernelPath: kernelPath,
@@ -1229,13 +1401,92 @@ ipcMain.handle('rename-server', (e, id, name) => {
 
 ipcMain.handle('select-server', (e, id) => {
   if (!config.servers.some(x => x.id === id)) return { ok: false, error: '服务器不存在' };
+  const running = isKernelRunning();
   config.selectedID = id;
   saveConfig();
+  if (running) {
+    logLine('[系统] 已切换服务器，重启代理生效');
+    restartKernel();
+  }
   broadcastState();
   return { ok: true };
 });
 
+// 自选节点：对所有服务器测速
+ipcMain.handle('test-nodes', async () => {
+  const results = await Promise.all(config.servers.map(async sv => {
+    const dialHost = String(sv.ip || '').split(',')[0].trim() || cleanHost(sv.server);
+    const r = await probeLatency(dialHost, sv.serverPort);
+    return { id: sv.id, name: sv.name || '未命名', host: dialHost, port: sv.serverPort, ok: r.ok, latency: r.latency };
+  }));
+  return { ok: true, results };
+});
+
+// Cloudflare 节点测速：对一批 host 测 443 延迟
+ipcMain.handle('test-hosts', async (e, hosts) => {
+  const list = Array.isArray(hosts) ? hosts.slice(0, 50) : [];
+  const results = await Promise.all(list.map(async h => {
+    const host = String(h || '').trim();
+    if (!host) return { host, ok: false, latency: -1 };
+    const r = await probeLatency(host, 443, 4000);
+    return { host, ok: r.ok, latency: r.latency };
+  }));
+  return { ok: true, results };
+});
+
+// 从优选 API 拉取 Cloudflare 节点列表（参考 _worker.js 请求优选API）
+ipcMain.handle('fetch-cf-nodes', async (e, apiUrls) => {
+  const urls = (Array.isArray(apiUrls) ? apiUrls : [apiUrls])
+    .map(u => String(u || '').trim())
+    .filter(u => /^https?:\/\//i.test(u))
+    .slice(0, 5);
+  const nodes = new Set();
+  await Promise.allSettled(urls.map(async url => {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 6000);
+      const resp = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
+      clearTimeout(t);
+      if (!resp.ok) return;
+      const text = await resp.text();
+      for (const raw of text.split(/\r?\n/)) {
+        let s = String(raw).trim();
+        if (!s) continue;
+        if (s.includes('://')) {
+          try { s = new URL(s).hostname; } catch (e) { continue; }
+        } else {
+          s = s.replace(/#.*$/, '').trim();
+          if (s.includes(':')) s = s.split(':')[0];
+        }
+        if (/^[0-9a-zA-Z][0-9a-zA-Z.\-]*\.[a-zA-Z]{2,}$/.test(s)) nodes.add(s);
+      }
+    } catch (e) {}
+  }));
+  return { ok: true, nodes: [...nodes].slice(0, 100) };
+});
+
 ipcMain.handle('import-servers', (e, list) => importServers(list));
+
+// 订阅器
+ipcMain.handle('fetch-subscription', async (e, url) => {
+  const r = await fetchSubscriptionContent(url);
+  if (!r.ok) return { ok: false, error: r.error };
+  const nodes = parseSubscription(r.text);
+  return { ok: true, nodes, count: nodes.length };
+});
+
+ipcMain.handle('import-subscription', (e, nodes) => {
+  const added = importSubscriptionNodes(nodes || []);
+  return { ok: true, added };
+});
+
+ipcMain.handle('update-subscription', async (e, url) => {
+  const r = await fetchSubscriptionContent(url);
+  if (!r.ok) return { ok: false, error: r.error };
+  const nodes = parseSubscription(r.text);
+  const added = importSubscriptionNodes(nodes);
+  return { ok: true, added, total: nodes.length };
+});
 
 ipcMain.handle('export-servers', async (e) => {
   const data = JSON.stringify(config.servers, null, 2);
@@ -1280,7 +1531,7 @@ ipcMain.handle('set-auto-launch', async (e, enabled) => setAutoLaunch(!!enabled)
 
 ipcMain.handle('set-config', (e, patch) => {
   if (patch && typeof patch === 'object') {
-    for (const k of ['logLevel', 'logVisible', 'showDiagnosticLogs', 'autoSystemProxy']) {
+    for (const k of ['logLevel', 'logVisible', 'showDiagnosticLogs', 'autoSystemProxy', 'cfApiUrls', 'subscriptions']) {
       if (k in patch) config[k] = patch[k];
     }
     saveConfig();

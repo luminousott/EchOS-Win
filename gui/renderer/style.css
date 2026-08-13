@@ -102,3 +102,20 @@ main{flex:1;overflow-y:auto;padding:2px 18px 10px;}
 .toast.error{background:var(--red);color:#fff;}
 .menu-check{display:flex;align-items:center;gap:6px;padding:6px 10px;font-size:12.5px;cursor:pointer;white-space:nowrap;}
 .menu-check input{accent-color:var(--accent);}
+
+/* Cloudflare ???? */
+.node-list{display:flex;flex-direction:column;gap:5px;max-height:300px;overflow-y:auto;}
+.node-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:7px;}
+.node-item:hover{border-color:var(--accent);}
+.node-item.node-down{opacity:0.5;}
+.node-rank{width:20px;color:var(--text-sub);font-size:11.5px;flex-shrink:0;}
+.node-host{font-family:var(--mono);font-size:12px;min-width:0;}
+.node-latency{font-size:12px;flex-shrink:0;color:var(--text-sub);}
+.node-latency.ok{color:var(--green);font-weight:600;}
+.node-latency.slow{color:var(--orange);}
+
+/* ???? */
+.sub-list{display:flex;flex-direction:column;gap:5px;max-height:220px;overflow-y:auto;}
+.sub-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:7px;}
+.sub-item:hover{border-color:var(--accent);}
+.sub-url{font-family:var(--mono);font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}

@@ -51,6 +51,27 @@ const RULE_ACTIONS = [
   { value: 'proxy', label: '走代理' },
   { value: 'block', label: '拦截' }
 ];
+// 内置 Cloudflare 优选节点（域名 / Anycast IP / 社区优选），供 ech-worker 自选
+const CF_NODES = [
+  'cdns.doon.eu.org',
+  'time.cloudflare.com',
+  'speed.cloudflare.com',
+  'cloudflare.182682.xyz',
+  'one.one.one.one',
+  '1.1.1.1',
+  '1.0.0.1',
+  '104.16.158.132',
+  '104.16.160.132',
+  '104.17.220.7',
+  '104.17.221.7',
+  '104.18.31.198',
+  '104.19.198.122',
+  '104.19.88.122',
+  '104.20.171.9',
+  '104.20.172.9',
+  '104.21.16.8',
+  '104.21.64.8'
+];
 
 let state = null;
 let logs = [];
@@ -72,6 +93,7 @@ const els = {
   cfg_server: $('cfg_server'), cfg_serverPort: $('cfg_serverPort'),
   cfg_token: $('cfg_token'), cfg_listen: $('cfg_listen'), cfg_listenPort: $('cfg_listenPort'),
   cfg_ip: $('cfg_ip'), cfg_ech: $('cfg_ech'), cfg_ech_custom: $('cfg_ech_custom'),
+  cfNodeSelect: $('cfNodeSelect'), cfNodeTestBtn: $('cfNodeTestBtn'),
   cfg_dns: $('cfg_dns'), cfg_dns_custom: $('cfg_dns_custom'),
   modeSeg: $('modeSeg'),
   rulesChevron: $('rulesChevron'), rulesMeta: $('rulesMeta'), addRuleBtn: $('addRuleBtn'),
@@ -127,10 +149,21 @@ function renderEdit() {
   els.cfg_listen.value = currentEdit.listen || '';
   els.cfg_listenPort.value = currentEdit.listenPort;
   els.cfg_ip.value = currentEdit.ip || '';
+  fillCfNodeSelect(currentEdit.ip || '');
   fillPresetSelect(els.cfg_ech, ECH_PRESETS, currentEdit.ech || '', 'cloudflare-ech.com');
   fillPresetSelect(els.cfg_dns, DNS_PRESETS, currentEdit.dns || '', 'dns.alidns.com/dns-query');
   renderRules();
   renderDirty();
+}
+
+function fillCfNodeSelect(current) {
+  const sel = els.cfNodeSelect;
+  if (!sel) return;
+  sel.innerHTML = '';
+  sel.appendChild(new Option('CF 节点…', '', false, !CF_NODES.includes(current)));
+  for (const n of CF_NODES) {
+    sel.appendChild(new Option(n, n, false, n === current));
+  }
 }
 
 function fillPresetSelect(sel, presets, current, placeholder) {
@@ -527,6 +560,129 @@ function showPortConflict(info) {
       </div>
     </div>`);
 }
+// ======================= 订阅管理 =======================
+function renderSubList() {
+  const list = document.getElementById('subList');
+  if (!list) return;
+  const subs = (state && state.subscriptions) || [];
+  list.innerHTML = subs.map(u => `
+    <div class="sub-item">
+      <span class="sub-url flex1" title="${esc(u)}">${esc(u)}</span>
+      <button class="btn small" data-act="sub-update" data-url="${esc(u)}">更新导入</button>
+      <button class="btn small danger" data-act="sub-del" data-url="${esc(u)}">删除</button>
+    </div>`).join('') || '<div style="color:var(--text-sub);font-size:12px">还没有订阅，先添加 URL</div>';
+}
+
+async function showSubscriptionManager() {
+  openModal(`
+    <div class="modal-head"><h2>订阅管理</h2><button class="modal-close" data-act="close">×</button></div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>添加订阅 URL（支持 vless / vmess / trojan / ss 订阅，可 base64 编码）</label>
+        <div style="display:flex;gap:8px">
+          <input id="subUrlInput" class="input flex1" placeholder="https://.../subscribe?token=...">
+          <button id="subAddBtn" class="btn small primary">添加</button>
+        </div>
+      </div>
+      <div class="sub-list" id="subList"></div>
+      <div class="form-error" id="subError"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="subUpdateAllBtn" class="btn primary">立即更新并导入全部</button>
+      <span class="flex1"></span>
+      <button class="btn" data-act="close">关闭</button>
+    </div>`);
+  renderSubList();
+  document.getElementById('subAddBtn').addEventListener('click', async () => {
+    const input = document.getElementById('subUrlInput');
+    const url = input.value.trim();
+    if (!/^https?:\/\//i.test(url)) { $('subError').textContent = '请输入有效的订阅 URL'; return; }
+    const subs = [...((state && state.subscriptions) || [])];
+    if (!subs.includes(url)) subs.push(url);
+    await api.setConfig({ subscriptions: subs });
+    const s = await api.getState(); state = s;
+    renderSubList(); input.value = ''; $('subError').textContent = '';
+    toast('已添加订阅');
+  });
+  document.getElementById('subUpdateAllBtn').addEventListener('click', async () => {
+    const subs = (state && state.subscriptions) || [];
+    if (!subs.length) { $('subError').textContent = '请先添加订阅 URL'; return; }
+    $('subError').textContent = '';
+    let total = 0, fail = 0;
+    toast('正在更新订阅…');
+    for (const url of subs) {
+      const r = await api.updateSubscription(url);
+      if (r.ok) total += r.added; else fail++;
+    }
+    const s = await api.getState(); state = s;
+    renderSubList();
+    toast(`订阅更新完成：新导入 ${total} 个节点${fail ? '，' + fail + ' 个订阅失败' : ''}`);
+  });
+}
+
+// ======================= Cloudflare 节点测速 =======================
+async function runCfNodeSpeedTest(hosts) {
+  const r = await api.testHosts(hosts);
+  if (!r.ok || !r.results) return [];
+  return r.results.slice().sort((a, b) => {
+    if (a.ok !== b.ok) return a.ok ? -1 : 1;
+    return a.latency - b.latency;
+  });
+}
+function renderCfNodeList(results) {
+  const list = document.getElementById('cfNodeList');
+  if (!list) return;
+  list.innerHTML = results.map((n, i) => `
+    <div class="node-item ${n.ok ? '' : 'node-down'}" data-host="${esc(n.host)}">
+      <span class="node-rank">${i + 1}</span>
+      <span class="node-host flex1">${esc(n.host)}</span>
+      <span class="node-latency ${n.ok ? (n.latency < 150 ? 'ok' : 'slow') : ''}">${n.ok ? n.latency + ' ms' : '超时'}</span>
+      <button class="btn small" data-act="cf-pick">选用</button>
+    </div>`).join('') || '<div style="color:var(--text-sub)">暂无可用节点</div>';
+}
+async function showCfNodeTest() {
+  const saved = (state && state.cfApiUrls) || [];
+  openModal(`
+    <div class="modal-head"><h2>Cloudflare 节点测速</h2><button class="modal-close" data-act="close">×</button></div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>优选 API（每行/逗号分隔，可填多个；留空用内置节点。参考 _worker.js 优选机制）</label>
+        <textarea id="cfApiInput" rows="2" style="width:100%;padding:6px 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font-size:12px;font-family:var(--mono);outline:none">${esc(saved.join(', '))}</textarea>
+        <div style="display:flex;gap:8px;margin-top:6px">
+          <button id="cfFetchBtn" class="btn small primary">获取并测速</button>
+          <button id="cfBuiltinBtn" class="btn small">仅内置节点</button>
+          <button id="cfSaveApiBtn" class="btn small" title="保存优选 API 到配置">保存 API</button>
+        </div>
+      </div>
+      <div class="node-list" id="cfNodeList"></div>
+    </div>
+    <div class="modal-foot"><button class="btn" data-act="close">关闭</button></div>`);
+
+  const showList = (results) => { renderCfNodeList(results); };
+  const testBuiltin = async () => {
+    toast('正在对内置节点测速…');
+    showList(await runCfNodeSpeedTest(CF_NODES));
+  };
+  const testWithApi = async () => {
+    const urls = document.getElementById('cfApiInput').value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+    if (!urls.length) return testBuiltin();
+    toast('正在从优选 API 获取节点…');
+    const fr = await api.fetchCfNodes(urls);
+    const hosts = [...new Set([...(fr && fr.nodes ? fr.nodes : []), ...CF_NODES])];
+    if (!hosts.length) { toast('优选 API 未返回节点', true); return testBuiltin(); }
+    toast(`获取 ${hosts.length} 个节点，正在测速…`);
+    showList(await runCfNodeSpeedTest(hosts));
+  };
+  document.getElementById('cfFetchBtn').addEventListener('click', testWithApi);
+  document.getElementById('cfBuiltinBtn').addEventListener('click', testBuiltin);
+  document.getElementById('cfSaveApiBtn').addEventListener('click', async () => {
+    const urls = document.getElementById('cfApiInput').value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+    await api.setConfig({ cfApiUrls: urls });
+    toast('优选 API 已保存');
+  });
+  testBuiltin();
+}
+
 // ======================= 事件绑定 =======================
 function bindEvents() {
   // 检查更新 / 设置菜单 / 诊断日志
@@ -552,6 +708,7 @@ function bindEvents() {
   document.querySelectorAll('#settingsMenu .menu-item').forEach(item => {
     item.addEventListener('click', () => {
       if (item.dataset.act === 'reveal-logs') api.revealLogs();
+      if (item.dataset.act === 'subscription') showSubscriptionManager();
       document.querySelectorAll('.menu.open').forEach(m => m.classList.remove('open'));
     });
   });
@@ -587,6 +744,10 @@ function bindEvents() {
   bindField(els.cfg_listen, 'listen');
   bindField(els.cfg_listenPort, 'listenPort');
   bindField(els.cfg_ip, 'ip');
+  els.cfNodeSelect.addEventListener('change', () => {
+    if (els.cfNodeSelect.value) field('ip', els.cfNodeSelect.value);
+  });
+  els.cfNodeTestBtn.addEventListener('click', showCfNodeTest);
 
   // 掩码：聚焦显示、失焦圆点
   for (const el of [els.cfg_server, els.cfg_token]) {
@@ -743,6 +904,31 @@ function bindEvents() {
       }
       case 'pc-change': await api.portDecision({ action: 'change' }); closeModal(); break;
       case 'pc-cancel': await api.portDecision({ action: 'cancel' }); closeModal(); break;
+      case 'sub-update': {
+        const url = e.target.dataset.url;
+        toast('正在更新订阅…');
+        const r = await api.updateSubscription(url);
+        if (r.ok) { toast(`已导入 ${r.added} 个节点（共 ${r.total}）`); const s = await api.getState(); renderState(s); renderSubList(); }
+        else toast(r.error || '更新失败', true);
+        break;
+      }
+      case 'sub-del': {
+        const url = e.target.dataset.url;
+        const subs = ((state && state.subscriptions) || []).filter(u => u !== url);
+        await api.setConfig({ subscriptions: subs });
+        const s = await api.getState(); state = s;
+        renderSubList();
+        break;
+      }
+      case 'cf-pick': {
+        const item = e.target.closest('.node-item');
+        if (item && currentEdit) {
+          field('ip', item.dataset.host);
+          closeModal();
+          toast('已选用节点 ' + item.dataset.host + '，记得点「保存」');
+        }
+        break;
+      }
     }
   });
 }

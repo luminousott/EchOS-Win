@@ -30,6 +30,13 @@ contextBridge.exposeInMainWorld('echos', {
   killProcess: (pid) => ipcRenderer.invoke('kill-process', pid),
   portDecision: (decision) => ipcRenderer.invoke('port-decision', decision),
   pickFreePort: () => ipcRenderer.invoke('pick-free-port'),
+  testNodes: () => ipcRenderer.invoke('test-nodes'),
+  testHosts: (hosts) => ipcRenderer.invoke('test-hosts', hosts),
+  fetchCfNodes: (apiUrls) => ipcRenderer.invoke('fetch-cf-nodes', apiUrls),
+  // 订阅器
+  fetchSubscription: (url) => ipcRenderer.invoke('fetch-subscription', url),
+  importSubscription: (nodes) => ipcRenderer.invoke('import-subscription', nodes),
+  updateSubscription: (url) => ipcRenderer.invoke('update-subscription', url),
   // WebDAV / 备份
   getWebdav: () => ipcRenderer.invoke('get-webdav'),
   saveWebdav: (raw) => ipcRenderer.invoke('save-webdav', raw),
