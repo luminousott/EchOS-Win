@@ -8,96 +8,140 @@
 </head>
 <body>
 <div id="app">
-  <header>
-    <div class="title-row">
-      <div class="logo">☁</div>
-      <h1>EchOS</h1>
-      <span class="version" id="versionLabel"></span>
-    </div>
-    <div class="server-row">
-      <select id="serverSelect" title="选择服务器"></select>
-      <button id="manageBtn" class="btn ghost">服务器管理</button>
-    </div>
+  <!-- 标题栏 -->
+  <header class="title-bar">
+    <span class="cloud-icon">☁</span>
+    <h1>EchOS-Win</h1>
+    <span class="version" id="versionLabel"></span>
   </header>
 
-  <main>
-    <section class="card status-card">
-      <div class="status-left">
-        <div class="status-dot" id="statusDot"></div>
-        <div>
-          <div class="status-title" id="statusTitle">未运行</div>
-          <div class="status-sub" id="statusSub"></div>
+  <main id="main">
+    <!-- 服务器管理 -->
+    <section class="card">
+      <div class="card-title">服务器管理</div>
+      <div class="server-row">
+        <span class="label">选择服务器:</span>
+        <select id="serverSelect" class="select flex1"></select>
+        <button id="addBtn" class="btn small">新增</button>
+        <button id="renameBtn" class="btn small">重命名</button>
+        <button id="saveBtn" class="btn small">保存</button>
+        <button id="delBtn" class="btn small danger">删除</button>
+        <div class="menu-wrap">
+          <button id="shareBtn" class="btn small">分享 ▾</button>
+          <div class="menu" id="shareMenu">
+            <div class="menu-item" data-act="share-export">选择并导出服务器…</div>
+            <div class="menu-item" data-act="share-import">导入服务器…</div>
+          </div>
+        </div>
+        <div class="menu-wrap">
+          <button id="backupBtn" class="btn small">备份 ▾</button>
+          <div class="menu" id="backupMenu">
+            <div class="menu-item" data-act="backup-local">备份到本地文件…</div>
+            <div class="menu-item" data-act="restore-local">从本地文件还原…</div>
+            <div class="menu-sep"></div>
+            <div class="menu-item" data-act="webdav-settings">WebDAV 设置…</div>
+            <div class="menu-item" data-act="backup-webdav">备份到远程 WebDAV</div>
+            <div class="menu-item" data-act="restore-webdav">从远程 WebDAV 还原备份</div>
+            <div class="menu-item" data-act="delete-webdav">删除远程 WebDAV 备份</div>
+          </div>
+        </div>
+        <button id="selfCheckBtn" class="btn small">自检</button>
+      </div>
+    </section>
+
+    <!-- 核心配置 -->
+    <section class="card">
+      <div class="card-title">核心配置</div>
+      <div class="cfg-row">
+        <span class="label">服务器地址:</span>
+        <input id="cfg_server" class="input flex1 mask" placeholder="xxx.workers.dev" autocomplete="off">
+        <input id="cfg_serverPort" class="input port" type="number" min="1" max="65535">
+      </div>
+      <div class="cfg-row">
+        <span class="label">TOKEN(可选):</span>
+        <input id="cfg_token" class="input flex1 mask" placeholder="可留空" autocomplete="new-password">
+      </div>
+      <div class="cfg-row">
+        <span class="label">监听地址:</span>
+        <input id="cfg_listen" class="input flex1" placeholder="127.0.0.1">
+        <input id="cfg_listenPort" class="input port" type="number" min="1" max="65534">
+      </div>
+      <div class="cfg-row">
+        <span class="label">优选域名(IP):</span>
+        <input id="cfg_ip" class="input flex1" placeholder="cdns.doon.eu.org">
+      </div>
+    </section>
+
+    <!-- 高级选项 -->
+    <section class="card">
+      <div class="card-title">高级选项</div>
+      <div class="cfg-row">
+        <span class="label">ECH域名:</span>
+        <select id="cfg_ech" class="select flex1"></select>
+        <input id="cfg_ech_custom" class="input flex1 hidden" placeholder="cloudflare-ech.com">
+      </div>
+      <div class="cfg-row">
+        <span class="label">DOH服务器:</span>
+        <select id="cfg_dns" class="select flex1"></select>
+        <input id="cfg_dns_custom" class="input flex1 hidden" placeholder="dns.alidns.com/dns-query">
+      </div>
+      <div class="cfg-row">
+        <span class="label">分流模式:</span>
+        <div class="seg" id="modeSeg">
+          <button class="seg-btn" data-mode="bypassCN">绕过中国大陆</button>
+          <button class="seg-btn" data-mode="blacklist">黑名单</button>
+          <button class="seg-btn" data-mode="global">全局</button>
         </div>
       </div>
-      <div class="status-right">
-        <button id="startBtn" class="btn primary">启动代理</button>
-        <button id="selfCheckBtn" class="btn ghost" title="通过本地代理探测连通性">自检</button>
-      </div>
-    </section>
 
-    <section class="card">
-      <div class="card-title">分流模式</div>
-      <div class="mode-row" id="modeRow">
-        <label class="mode-option" data-mode="bypassCN">
-          <input type="radio" name="mode" value="bypassCN">
-          <div><b>绕过中国大陆</b><span>国内直连，其余走代理（推荐）</span></div>
-        </label>
-        <label class="mode-option" data-mode="blacklist">
-          <input type="radio" name="mode" value="blacklist">
-          <div><b>黑名单模式</b><span>仅名单内网站走代理</span></div>
-        </label>
-        <label class="mode-option" data-mode="global">
-          <input type="radio" name="mode" value="global">
-          <div><b>全局模式</b><span>所有流量走代理</span></div>
-        </label>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="card-title">系统代理</div>
-      <div class="setting-row">
-        <div>
-          <div class="setting-name">接管系统代理</div>
-          <div class="setting-desc" id="proxySummary">未启用</div>
+      <div class="rules-block">
+        <div class="rules-head">
+          <span id="rulesChevron" class="chevron">▸</span>
+          <span class="rules-title">自定义分流规则</span>
+          <span class="rules-meta" id="rulesMeta"></span>
+          <span class="flex1"></span>
+          <button id="addRuleBtn" class="btn small">添加规则</button>
         </div>
-        <label class="switch"><input type="checkbox" id="systemProxySwitch"><span class="slider"></span></label>
+        <div class="rules-body hidden" id="rulesBody">
+          <div class="rule-search hidden" id="ruleSearchWrap">
+            <input id="ruleSearch" class="input flex1" placeholder="搜索规则">
+            <button id="ruleSearchClear" class="btn small hidden">✕</button>
+          </div>
+          <div class="rule-list" id="ruleList"></div>
+          <div class="rule-footer" id="ruleFooter"></div>
+        </div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-title">设置</div>
-      <div class="setting-row">
-        <div><div class="setting-name">开机自启</div><div class="setting-desc">登录 Windows 后自动启动</div></div>
-        <label class="switch"><input type="checkbox" id="autoLaunchSwitch"><span class="slider"></span></label>
-      </div>
-      <div class="setting-row">
-        <div><div class="setting-name">日志级别</div><div class="setting-desc">控制内核日志显示</div></div>
-        <select id="logLevelSelect" class="select">
-          <option value="off">关闭</option>
-          <option value="error">仅错误</option>
-          <option value="warning">警告以上</option>
-          <option value="info">全部</option>
-          <option value="checkOnly">自检记录</option>
-        </select>
-      </div>
-      <div class="setting-row">
-        <div><div class="setting-name">显示日志面板</div><div class="setting-desc">底部展开运行日志</div></div>
-        <label class="switch"><input type="checkbox" id="logVisibleSwitch"><span class="slider"></span></label>
-      </div>
-      <div class="setting-row">
-        <div><div class="setting-name">检查更新</div><div class="setting-desc">从 GitHub Releases 检查新版本</div></div>
-        <button id="checkUpdateBtn" class="btn ghost">检查</button>
+    <!-- 操作行 -->
+    <section class="action-bar">
+      <label class="chk"><input type="checkbox" id="launchSwitch"> 开机启动</label>
+      <label class="chk"><input type="checkbox" id="sysProxySwitch"> 自动设置系统代理</label>
+      <span class="flex1"></span>
+      <button id="startBtn" class="btn primary">启动代理</button>
+      <button id="stopBtn" class="btn danger">停止代理</button>
+      <div class="status-line">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">已停止</span>
+        <span id="checkLabel" class="check-label"></span>
       </div>
     </section>
   </main>
 
+  <!-- 日志面板 -->
   <footer class="log-panel" id="logPanel">
     <div class="log-header">
-      <span>运行日志</span>
-      <div class="log-actions">
-        <button id="revealLogsBtn" class="btn ghost small">打开日志目录</button>
-        <button id="clearLogsBtn" class="btn ghost small">清空</button>
-      </div>
+      <button id="logToggle" class="btn-link"><span id="logChevron">▾</span> <span id="logTitle">运行日志</span></button>
+      <span class="flex1"></span>
+      <select id="logLevelSelect" class="select small-select">
+        <option value="off">关闭</option>
+        <option value="error">仅错误</option>
+        <option value="warning">警告以上</option>
+        <option value="info">全部</option>
+        <option value="checkOnly">自检记录</option>
+      </select>
+      <button id="logFileBtn" class="btn small">日志文件</button>
+      <button id="clearLogBtn" class="btn small">清空</button>
     </div>
     <div class="log-body" id="logBody"></div>
   </footer>

@@ -1,6 +1,6 @@
 // EchOS-Win - 主进程
 // 负责：内核(x-tunnel.exe)生命周期、系统代理(注册表+WinINET)、开机启动、托盘、更新检查、日志
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, dialog, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, dialog, shell, safeStorage } = require('electron');
 const { spawn, execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -141,6 +141,12 @@ function logLine(text) {
   const t = new Date();
   const ts = `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}`;
   const line = `[${ts}] ${text}`;
+  // 自检结论走独立通道（对齐 macOS：不进运行日志）
+  if (String(text).includes('[自检]')) {
+    checkLines.push(line);
+    if (checkLines.length > 500) checkLines.splice(0, checkLines.length - 500);
+    if (win && !win.isDestroyed()) win.webContents.send('check-line', line);
+  }
   logLines.push(line);
   if (logLines.length > 3000) logLines.splice(0, logLines.length - 3000);
   try {
@@ -168,6 +174,25 @@ let kernelLogSink = null; // (line) => void，由 renderer 订阅
 // ======================= 内核进程管理 =======================
 let kernelProc = null;
 let isStarting = false;
+// 状态灯 / 自检状态（对齐 macOS 版）
+let proxyActive = false;            // 系统代理是否已接管
+let statusText = '已停止';
+let checkState = { phase: 'idle', detail: '' };  // idle / running / ok / failed
+let checking = false;
+let checkLines = [];
+
+function refreshStatusText() {
+  if (!isKernelRunning()) {
+    statusText = isStarting ? '启动中…' : '已停止';
+  } else {
+    const server = selectedServer();
+    let t = '运行中';
+    if (server) t += ` · 本地端口 ${server.listenPort}`;
+    t += proxyActive ? ' · 已接管系统代理' : ' · 未接管系统代理';
+    statusText = t;
+  }
+  broadcastState();
+}
 
 function normalizeDoH(raw) {
   let s = String(raw || '').trim();
@@ -237,7 +262,9 @@ function selectedServer() {
   return config.servers.find(s => s.id === config.selectedID) || null;
 }
 
-function startKernel() {
+let pendingPortDecision = null;
+
+async function startKernel() {
   if (kernelProc || isStarting) return { ok: false, error: '代理已在运行或正在启动' };
   const server = selectedServer();
   if (!server) return { ok: false, error: '请先添加并选择一台服务器' };
@@ -247,7 +274,37 @@ function startKernel() {
   // 清理上次残留内核进程
   killLeftoverKernel();
 
+  // 端口占用检查：被占用则询问用户（强制结束占用进程 / 自动换端口 / 取消）
+  if (!(await isPortFree(server.listenPort))) {
+    const occ = await findPortOccupant(server.listenPort);
+    const label = occ ? `${occ.name}(PID ${occ.pid})` : '未知进程';
+    logLine(`[系统] 监听端口 ${server.listenPort} 被 ${label} 占用`);
+    const decision = await new Promise(resolve => {
+      pendingPortDecision = resolve;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('port-conflict', { port: server.listenPort, occupant: occ, label });
+      } else {
+        resolve({ action: 'kill', pid: occ ? occ.pid : null });
+      }
+    });
+    pendingPortDecision = null;
+    if (!decision || decision.action === 'cancel') return { ok: false, error: '已取消启动（端口被占用）' };
+    if (decision.action === 'kill' && decision.pid) {
+      const killed = await killProcess(decision.pid);
+      if (!killed) return { ok: false, error: `无法结束进程 ${decision.pid}` };
+      logLine(`[系统] 已结束占用进程 ${label}`);
+      await new Promise(r => setTimeout(r, 500));
+    } else if (decision.action === 'change') {
+      const pair = await pickFreePortPair(server.listenPort);
+      server.listenPort = pair.socks;
+      const idx = config.servers.findIndex(s => s.id === server.id);
+      if (idx >= 0) { config.servers[idx].listenPort = pair.socks; saveConfig(); }
+      logLine(`[系统] 已自动切换监听端口为 ${pair.socks}（HTTP ${pair.http}）`);
+    }
+  }
+
   isStarting = true;
+  refreshStatusText();
   const args = buildKernelArgs(server, config.routeMode);
   logLine(`[系统] 启动内核: ${path.basename(kernelPath)} ${args.join(' ')}`);
 
@@ -286,9 +343,11 @@ function startKernel() {
   // 等待本地端口就绪后再接管系统代理（与 macOS 版一致：端口就绪≈隧道已通）
   waitPortReady(server.listenPort).then(ok => {
     if (!ok || !kernelProc) {
-      logLine('[系统] 本地代理端口未就绪，内核可能启动失败');
+      const hint = serverFailureHint();
+      logLine('[系统] 本地代理端口未就绪，内核可能启动失败' + (hint ? `：${hint}` : ''));
       isStarting = false;
       broadcastState();
+      if (hint && win && !win.isDestroyed()) win.webContents.send('start-failed', { hint });
       return;
     }
     isStarting = false;
@@ -297,6 +356,7 @@ function startKernel() {
       if (!r.ok) logLine(`[系统] 接管系统代理失败: ${r.error}`);
     }
     logLine('[系统] 内核已就绪，本地代理运行中');
+    refreshStatusText();
     broadcastState();
   });
 
@@ -313,6 +373,8 @@ function stopKernel() {
     try { p.kill(); } catch (e) {}
   }
   try { if (fs.existsSync(kernelPidFile)) fs.unlinkSync(kernelPidFile); } catch (e) {}
+  checkState = { phase: 'idle', detail: '' };
+  refreshStatusText();
   broadcastState();
   return { ok: true };
 }
@@ -421,6 +483,8 @@ function setSystemProxyEnabled(enabled, httpPort, silent) {
       const ok2 = await regSet(INTERNET_SETTINGS, 'ProxyServer', 'REG_SZ', `127.0.0.1:${httpPort}`);
       const ok3 = await regSet(INTERNET_SETTINGS, 'ProxyOverride', 'REG_SZ', '<local>');
       refreshWinInet();
+      proxyActive = true;
+      refreshStatusText();
       logLine(`[系统] 已接管系统代理: HTTP 127.0.0.1:${httpPort}`);
       broadcastState();
       return { ok: ok1 && ok2 && ok3 };
@@ -443,6 +507,8 @@ function setSystemProxyEnabled(enabled, httpPort, silent) {
       } else {
         logLine('[系统] 已关闭系统代理（无备份可还原）');
       }
+      proxyActive = false;
+      refreshStatusText();
       refreshWinInet();
       broadcastState();
       return { ok: true };
@@ -669,6 +735,202 @@ function importServers(list) {
   return { ok: true, added };
 }
 
+// ======================= 端口占用处理 =======================
+function isPortFree(port) {
+  return new Promise(resolve => {
+    const net = require('net');
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    srv.listen(port, '127.0.0.1', () => srv.close(() => resolve(true)));
+  });
+}
+
+// 查询监听某端口的进程（netstat + tasklist）
+function findPortOccupant(port) {
+  return new Promise(resolve => {
+    execFile('netstat.exe', ['-ano', '-p', 'tcp'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      if (err) return resolve(null);
+      let pid = null;
+      for (const line of String(stdout).split(/\r?\n/)) {
+        const m = line.match(/TCP\s+(\S+):(\d+)\s+\S+:\S+\s+LISTENING\s+(\d+)/i);
+        if (m && parseInt(m[2], 10) === port) { pid = parseInt(m[3], 10); break; }
+      }
+      if (!pid) return resolve(null);
+      execFile('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { windowsHide: true }, (e2, out2) => {
+        let name = '未知进程';
+        if (!e2 && out2) { const mm = String(out2).match(/"([^"]+)"/); if (mm) name = mm[1]; }
+        resolve({ pid, name });
+      });
+    });
+  });
+}
+
+// 强制结束进程（用户明确确认过才调用）
+function killProcess(pid) {
+  return new Promise(resolve => {
+    execFile('taskkill.exe', ['/F', '/PID', String(pid)], { windowsHide: true }, err => resolve(!err));
+  });
+}
+
+// 自动挑选连续两个空闲端口（SOCKS5 + HTTP）
+function pickFreePortPair(start = 30000, limit = 200) {
+  return (async () => {
+    const end = Math.min(start + limit, 65534);
+    for (let p = start; p < end; p += 2) {
+      if (await isPortFree(p) && await isPortFree(p + 1)) return { socks: p, http: p + 1 };
+    }
+    return { socks: start, http: start + 1 };
+  })();
+}
+
+// ======================= 启动失败智能提示 =======================
+function serverFailureHint() {
+  const hints = logLines.slice(-30).join('\n');
+  const lower = hints.toLowerCase();
+  if (/认证失败|token\s*不匹配|unauthorized|401/.test(lower)) return 'TOKEN 与服务器端不一致';
+  if (/no such host|lookup|找不到主机/.test(lower)) {
+    const m = hints.match(/\(IP:[^)]*\)/);
+    if (m) {
+      return m[0].includes('自动解析')
+        ? '服务地址解析失败，请检查「服务地址」'
+        : '优选IP/域名解析失败，请检查「优选IP/域名」';
+    }
+    return '服务器连接失败';
+  }
+  if (/connection refused|i\/o timeout|deadline exceeded|timed out|bad handshake|handshake failure|reset by peer/.test(lower)) {
+    return '服务器连接失败';
+  }
+  return null;
+}
+
+// ======================= WebDAV / 配置备份 =======================
+const WEBDAV_FILE = 'EchOS-config.json';
+const WEBDAV_DIR = 'EchOS_Backup';
+
+// 密码用系统安全存储（DPAPI）加密后落盘
+function encryptSecret(plain) {
+  if (!plain) return '';
+  try { return safeStorage.isEncryptionAvailable() ? 'enc:' + safeStorage.encryptString(plain).toString('base64') : plain; } catch (e) { return plain; }
+}
+function decryptSecret(stored) {
+  if (!stored) return '';
+  if (stored.startsWith('enc:')) {
+    try { return safeStorage.decryptString(Buffer.from(stored.slice(4), 'base64')); } catch (e) { return ''; }
+  }
+  return stored;
+}
+
+// 归一化成可 PUT/GET/DELETE 的 WebDAV 文件 URL
+function webdavEndpoint(raw, directory) {
+  let s = String(raw || '').trim();
+  if (!/^https?:\/\//i.test(s)) return null;
+  if (/\.json$/i.test(s)) return s.replace(/\/+$/, '');
+  const dir = String(directory || '').trim();
+  return s.replace(/\/+$/, '') + '/' + (dir || WEBDAV_DIR) + '/' + WEBDAV_FILE;
+}
+
+function webdavRequest(method, url, username, password, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(url); } catch (e) { return reject(new Error('WebDAV 地址无效')); }
+    const lib = u.protocol === 'https:' ? https : http;
+    const headers = { Authorization: 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64') };
+    if (body) headers['Content-Type'] = 'application/json';
+    const req = lib.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method, headers, timeout: timeoutMs || 15000
+    }, res => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => resolve({ status: res.statusCode, data }));
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('请求超时')); });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function backupData() { return JSON.stringify(config, null, 2); }
+
+async function backupToWebDAV() {
+  const w = config.webdav;
+  if (!w || !w.url) return { ok: false, error: '请先填写 WebDAV 地址' };
+  const url = webdavEndpoint(w.url, w.directory);
+  if (!url) return { ok: false, error: 'WebDAV 地址无效' };
+  const password = decryptSecret(w.passwordEnc || w.password || '');
+  if (!password) return { ok: false, error: '请先设置 WebDAV 密码' };
+  try {
+    const r = await webdavRequest('PUT', url, w.username, password, backupData());
+    if (r.status < 200 || r.status >= 300) return { ok: false, error: `WebDAV 返回 ${r.status}` };
+    logLine(`[系统] 已备份到 WebDAV（${config.servers.length} 个服务器）`);
+    return { ok: true, detail: '已备份到 WebDAV' };
+  } catch (e) {
+    logLine(`[系统] WebDAV 备份失败: ${e.message}`);
+    return { ok: false, error: `WebDAV 备份失败：${e.message}` };
+  }
+}
+
+async function restoreFromWebDAV() {
+  const w = config.webdav;
+  if (!w || !w.url) return { ok: false, error: '请先填写 WebDAV 地址' };
+  const url = webdavEndpoint(w.url, w.directory);
+  if (!url) return { ok: false, error: 'WebDAV 地址无效' };
+  const password = decryptSecret(w.passwordEnc || w.password || '');
+  if (!password) return { ok: false, error: '请先设置 WebDAV 密码' };
+  try {
+    const r = await webdavRequest('GET', url, w.username, password);
+    if (r.status < 200 || r.status >= 300) return { ok: false, error: `WebDAV 返回 ${r.status}` };
+    const data = JSON.parse(r.data);
+    if (!data || !Array.isArray(data.servers)) return { ok: false, error: '备份文件不是有效的配置备份' };
+    config = Object.assign({}, DEFAULT_CONFIG, data);
+    config.servers = (config.servers || []).map(s => Object.assign({}, DEFAULT_SERVER, s, { id: s.id || genId() }));
+    if (!config.servers.some(s => s.id === config.selectedID)) config.selectedID = config.servers.length ? config.servers[0].id : null;
+    saveConfig(); broadcastState();
+    logLine(`[系统] 已从 WebDAV 还原配置（${config.servers.length} 个服务器）`);
+    return { ok: true, detail: '已从 WebDAV 还原配置' };
+  } catch (e) {
+    return { ok: false, error: `WebDAV 还原失败：${e.message}` };
+  }
+}
+
+async function deleteWebDAVBackup() {
+  const w = config.webdav;
+  if (!w || !w.url) return { ok: false, error: '请先填写 WebDAV 地址' };
+  const url = webdavEndpoint(w.url, w.directory);
+  if (!url) return { ok: false, error: 'WebDAV 地址无效' };
+  const password = decryptSecret(w.passwordEnc || w.password || '');
+  if (!password) return { ok: false, error: '请先设置 WebDAV 密码' };
+  try {
+    const r = await webdavRequest('DELETE', url, w.username, password);
+    if (r.status === 404) return { ok: true, detail: '远程备份不存在（视为已删除）' };
+    if (r.status < 200 || r.status >= 300) return { ok: false, error: `WebDAV 返回 ${r.status}` };
+    logLine('[系统] 已删除 WebDAV 远程备份');
+    return { ok: true, detail: '已删除远程备份' };
+  } catch (e) {
+    return { ok: false, error: `删除失败：${e.message}` };
+  }
+}
+
+function saveWebDAV(raw) {
+  const prevEnc = (config.webdav && config.webdav.passwordEnc) || '';
+  config.webdav = {
+    url: String(raw.url || '').trim(),
+    username: String(raw.username || '').trim(),
+    directory: String(raw.directory || '').trim(),
+    passwordEnc: raw.password ? encryptSecret(String(raw.password)) : prevEnc
+  };
+  saveConfig(); broadcastState();
+  return { ok: true };
+}
+
+function removeWebDAV() {
+  config.webdav = null;
+  saveConfig(); broadcastState();
+  return { ok: true };
+}
 // ======================= 窗口 & 托盘 =======================
 let win = null;
 let tray = null;
@@ -715,34 +977,48 @@ function createTray() {
   }
 }
 
+function restartKernel() {
+  stopKernel();
+  setTimeout(() => startKernel(), 300);
+}
+
 function rebuildTrayMenu() {
   if (!tray) return;
   const running = isKernelRunning();
+  const ready = proxyActive;
   const menu = Menu.buildFromTemplate([
-    { label: '显示 EchOS-Win', click: () => showWindow() },
-    { type: 'separator' },
     {
-      label: running ? '停止代理' : '启动代理',
-      click: () => { running ? stopKernel() : startKernel(); }
+      label: (ready ? '● ' : '○ ') + (ready ? '系统代理已接管' : (running ? '代理运行中，系统代理未接管' : 'ECH 代理未运行')),
+      enabled: false
     },
+    { type: 'separator' },
+    { label: running ? '关闭 ECH 代理' : '开启 ECH 代理', click: () => { running ? stopKernel() : startKernel(); } },
     {
-      label: '切换分流模式',
-      submenu: Object.keys(ROUTE_MODES).map(key => ({
-        label: ROUTE_MODES[key].label,
+      label: '选择服务器',
+      submenu: config.servers.map(sv => ({
+        label: sv.name || '未命名',
         type: 'radio',
-        checked: config.routeMode === key,
-        click: () => { config.routeMode = key; saveConfig(); broadcastState(); rebuildTrayMenu(); }
+        checked: sv.id === config.selectedID,
+        click: () => {
+          config.selectedID = sv.id;
+          saveConfig(); broadcastState();
+          if (running) restartKernel();
+        }
       }))
     },
     { type: 'separator' },
     {
-      label: '开机自启',
-      type: 'checkbox',
-      checked: !!config.autoLaunch,
-      click: (item) => { setAutoLaunch(item.checked); }
+      label: '检查更新…',
+      click: () => {
+        checkUpdates().then(r => {
+          if (win && !win.isDestroyed() && r.ok && r.hasUpdate) win.webContents.send('update-available', r);
+          else if (win && !win.isDestroyed() && r.ok) win.webContents.send('toast-msg', { msg: '已是最新版本 v' + r.current });
+        }).catch(() => {});
+      }
     },
+    { label: '显示应用', click: () => showWindow() },
     { type: 'separator' },
-    { label: '退出', click: () => { quitApp(); } }
+    { label: '退出应用', click: () => { quitApp(); } }
   ]);
   tray.setContextMenu(menu);
 }
@@ -773,6 +1049,18 @@ function getPublicState() {
     version: APP_VERSION,
     running: isKernelRunning(),
     starting: isStarting,
+    statusText: statusText,
+    statusExtra: (() => {
+      if (!isKernelRunning()) return '';
+      const server = selectedServer();
+      let t = '';
+      if (server) t += ` · 本地端口 ${server.listenPort}`;
+      t += proxyActive ? ' · 已接管系统代理' : ' · 未接管系统代理';
+      return t;
+    })(),
+    checkState: checkState,
+    checking: checking,
+    checkLines: checkLines.slice(-300),
     servers: config.servers,
     selectedID: config.selectedID,
     server: server ? {
@@ -788,6 +1076,7 @@ function getPublicState() {
     logVisible: config.logVisible,
     autoLaunch: config.autoLaunch,
     showDiagnosticLogs: config.showDiagnosticLogs,
+    webdav: config.webdav ? { url: config.webdav.url, username: config.webdav.username, directory: config.webdav.directory, hasPassword: !!(config.webdav.passwordEnc || config.webdav.password) } : null,
     kernelExists: fs.existsSync(kernelPath),
     kernelPath: kernelPath,
     geoipExists: !!resolveGeoPath('geoip.dat'),
@@ -843,6 +1132,26 @@ ipcMain.handle('delete-server', (e, id) => {
   if (config.selectedID === id) config.selectedID = config.servers.length ? config.servers[0].id : null;
   saveConfig();
   broadcastState();
+  return { ok: true };
+});
+
+ipcMain.handle('add-server', () => {
+  const s = Object.assign({}, DEFAULT_SERVER, { id: genId(), name: '新服务器' });
+  config.servers.push(s);
+  config.selectedID = s.id;
+  saveConfig(); broadcastState();
+  return { ok: true, server: s };
+});
+
+ipcMain.handle('rename-server', (e, id, name) => {
+  const sv = config.servers.find(x => x.id === id);
+  if (!sv) return { ok: false, error: '服务器不存在' };
+  const n = String(name || '').trim();
+  if (!n) return { ok: false, error: '名称不能为空' };
+  if (Buffer.byteLength(n, 'utf8') > 24) return { ok: false, error: '名称过长（最多 8 个汉字 / 16 个英文）' };
+  if (config.servers.some(x => x.id !== id && x.name === n)) return { ok: false, error: '名称已存在' };
+  sv.name = n;
+  saveConfig(); broadcastState();
   return { ok: true };
 });
 
@@ -913,12 +1222,27 @@ ipcMain.handle('check-updates', async () => checkUpdates());
 ipcMain.handle('self-check', async () => {
   const server = selectedServer();
   if (!server) return { ok: false, error: '请先选择服务器' };
-  if (!isKernelRunning()) return { ok: false, error: '代理未运行，无法自检' };
-  logLine('[自检] 开始通过本地代理探测连通性...');
-  const r = await selfCheck(server.listenPort);
-  logLine(r.ok ? `[自检] 通过: ${r.detail}` : `[自检] 失败: ${r.error}`);
+  if (checking) return { ok: false, error: '正在自检中' };
+  checking = true;
+  checkState = { phase: 'running', detail: '' };
   broadcastState();
-  return r;
+  if (isKernelRunning()) {
+    logLine('[自检] 开始通过本地代理探测连通性...');
+    const r = await selfCheck(server.listenPort);
+    checking = false;
+    checkState = r.ok ? { phase: 'ok', detail: r.detail } : { phase: 'failed', detail: r.error };
+    logLine(r.ok ? `[自检] 通过: ${r.detail}` : `[自检] 失败: ${r.error}`);
+    broadcastState();
+    return r;
+  }
+  // 未运行时：预检服务端 / DoH 可达性（TCP 直连探测）
+  const checks = [];
+  checks.push(`服务端 ${server.server}:${server.serverPort}`);
+  checking = false;
+  checkState = { phase: 'failed', detail: '代理未运行，无法完整自检（仅可预检）' };
+  logLine('[自检] 代理未运行，跳过连通性探测');
+  broadcastState();
+  return { ok: false, error: '代理未运行，无法自检（启动代理后可完整自检）' };
 });
 
 ipcMain.handle('reveal-logs', () => {
@@ -927,6 +1251,65 @@ ipcMain.handle('reveal-logs', () => {
 });
 
 ipcMain.handle('open-update-url', (e, url) => { shell.openExternal(url); return { ok: true }; });
+
+// 端口占用
+ipcMain.handle('find-port-occupant', async (e, port) => ({ occupant: await findPortOccupant(port) }));
+ipcMain.handle('kill-process', async (e, pid) => ({ ok: await killProcess(pid) }));
+ipcMain.handle('port-decision', (e, decision) => {
+  if (pendingPortDecision) { pendingPortDecision(decision); pendingPortDecision = null; }
+  return { ok: true };
+});
+ipcMain.handle('pick-free-port', async () => pickFreePortPair());
+
+// WebDAV / 整配置备份
+ipcMain.handle('get-webdav', () => ({
+  webdav: config.webdav ? {
+    url: config.webdav.url, username: config.webdav.username,
+    directory: config.webdav.directory,
+    hasPassword: !!(config.webdav.passwordEnc || config.webdav.password)
+  } : null
+}));
+ipcMain.handle('save-webdav', (e, raw) => saveWebDAV(raw));
+ipcMain.handle('remove-webdav', () => removeWebDAV());
+ipcMain.handle('backup-webdav', async () => backupToWebDAV());
+ipcMain.handle('restore-webdav', async () => restoreFromWebDAV());
+ipcMain.handle('delete-webdav-backup', async () => deleteWebDAVBackup());
+
+ipcMain.handle('backup-local', async () => {
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: '备份配置',
+    defaultPath: path.join(app.getPath('downloads'), 'EchOS-Win-config.json'),
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  try {
+    fs.writeFileSync(filePath, backupData(), 'utf8');
+    logLine(`[系统] 配置已备份到 ${filePath}（${config.servers.length} 个服务器）`);
+    return { ok: true, filePath };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+
+ipcMain.handle('restore-local', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: '还原配置',
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+    properties: ['openFile']
+  });
+  if (canceled || !filePaths.length) return { ok: false, canceled: true };
+  try {
+    const data = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'));
+    if (!data || !Array.isArray(data.servers)) return { ok: false, error: '不是有效的配置备份' };
+    config = Object.assign({}, DEFAULT_CONFIG, data);
+    config.servers = (config.servers || []).map(s => Object.assign({}, DEFAULT_SERVER, s, { id: s.id || genId() }));
+    if (!config.servers.some(s => s.id === config.selectedID)) config.selectedID = config.servers.length ? config.servers[0].id : null;
+    saveConfig(); broadcastState();
+    logLine(`[系统] 已还原配置（${config.servers.length} 个服务器）`);
+    return { ok: true };
+  } catch (e) { return { ok: false, error: `还原失败：${e.message}` }; }
+});
+
+// 启动失败智能提示
+ipcMain.handle('get-failure-hint', () => ({ hint: serverFailureHint() }));
 
 // 渲染进程订阅内核日志（经过级别过滤）
 ipcMain.handle('subscribe-kernel-logs', (e, on) => {

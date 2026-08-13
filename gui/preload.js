@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('echos', {
   setSystemProxy: (enabled) => ipcRenderer.invoke('set-system-proxy', enabled),
   getSystemProxySummary: () => ipcRenderer.invoke('get-system-proxy-summary'),
   setRouteMode: (mode) => ipcRenderer.invoke('set-route-mode', mode),
+  addServer: () => ipcRenderer.invoke('add-server'),
+  renameServer: (id, name) => ipcRenderer.invoke('rename-server', id, name),
   saveServer: (server) => ipcRenderer.invoke('save-server', server),
   deleteServer: (id) => ipcRenderer.invoke('delete-server', id),
   selectServer: (id) => ipcRenderer.invoke('select-server', id),
@@ -23,8 +25,27 @@ contextBridge.exposeInMainWorld('echos', {
   revealLogs: () => ipcRenderer.invoke('reveal-logs'),
   openUpdateUrl: (url) => ipcRenderer.invoke('open-update-url', url),
   subscribeKernelLogs: (on) => ipcRenderer.invoke('subscribe-kernel-logs', on),
+  // 端口占用
+  findPortOccupant: (port) => ipcRenderer.invoke('find-port-occupant', port),
+  killProcess: (pid) => ipcRenderer.invoke('kill-process', pid),
+  portDecision: (decision) => ipcRenderer.invoke('port-decision', decision),
+  pickFreePort: () => ipcRenderer.invoke('pick-free-port'),
+  // WebDAV / 备份
+  getWebdav: () => ipcRenderer.invoke('get-webdav'),
+  saveWebdav: (raw) => ipcRenderer.invoke('save-webdav', raw),
+  removeWebdav: () => ipcRenderer.invoke('remove-webdav'),
+  backupWebdav: () => ipcRenderer.invoke('backup-webdav'),
+  restoreWebdav: () => ipcRenderer.invoke('restore-webdav'),
+  deleteWebdavBackup: () => ipcRenderer.invoke('delete-webdav-backup'),
+  backupLocal: () => ipcRenderer.invoke('backup-local'),
+  restoreLocal: () => ipcRenderer.invoke('restore-local'),
+  getFailureHint: () => ipcRenderer.invoke('get-failure-hint'),
   onState: (cb) => ipcRenderer.on('state', (_e, s) => cb(s)),
   onLogLine: (cb) => ipcRenderer.on('log-line', (_e, l) => cb(l)),
   onKernelLog: (cb) => ipcRenderer.on('kernel-log', (_e, l) => cb(l)),
-  onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, r) => cb(r))
+  onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_e, r) => cb(r)),
+  onPortConflict: (cb) => ipcRenderer.on('port-conflict', (_e, r) => cb(r)),
+  onStartFailed: (cb) => ipcRenderer.on('start-failed', (_e, r) => cb(r)),
+  onCheckLine: (cb) => ipcRenderer.on('check-line', (_e, l) => cb(l)),
+  onToastMsg: (cb) => ipcRenderer.on('toast-msg', (_e, r) => cb(r))
 });
