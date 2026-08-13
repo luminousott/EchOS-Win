@@ -523,8 +523,11 @@ function getUpdateRepo() {
   if (process.env.ECH_UPDATE_REPO) return process.env.ECH_UPDATE_REPO;
   try {
     const pkg = require('./package.json');
-    if (pkg.repository && typeof pkg.repository === 'string') {
-      return pkg.repository.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '');
+    const repo = typeof pkg.repository === 'string'
+      ? pkg.repository
+      : (pkg.repository && (pkg.repository.url || ''));
+    if (repo) {
+      return String(repo).replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '');
     }
   } catch (e) {}
   return null;

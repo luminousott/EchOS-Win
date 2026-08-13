@@ -5,6 +5,8 @@
   "main": "main.js",
   "author": "EchOS",
   "license": "MIT",
+  "repository": "https://github.com/luminousott/EchOS-Win",
+  "upstream": "https://github.com/nerder-real/EchOS/",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win --x64"

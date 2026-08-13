@@ -4,6 +4,7 @@
 
 **Go 内核 + Electron 界面**，一个 App 完成代理全部功能，不需要额外装 v2rayN / ClashX。
 服务端跑在 Cloudflare Workers 上，免费额度足够个人日常使用。
+> 上游源仓库：**[https://github.com/nerder-real/EchOS/](https://github.com/nerder-real/EchOS/)**（macOS 原版，本项目由它移植而来）
 > **Windows 版（Go + Electron）为当前默认**；原 macOS 版（Go + SwiftUI）源码保留在 `gui-macos/`，
 > 构建脚本为 `build.sh` / `make-dmg.sh`。
 
@@ -243,6 +244,9 @@ EchOS-Win/
 ---
 
 ## 致谢与来源说明
+本项目由 macOS 版 [EchOS](https://github.com/nerder-real/EchOS/)（Go + SwiftUI）移植而来，
+上游源仓库：**https://github.com/nerder-real/EchOS/**，在多位开源作者的工作基础上适配成 Windows 桌面应用（Go + Electron）。
+
 
 本项目是面向 Windows 的 ECH 加密代理客户端，在多位开源作者的工作基础上适配而来。特别感谢：
 
