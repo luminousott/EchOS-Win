@@ -582,14 +582,25 @@ async function showCfNodeTest() {
   document.getElementById('cfFetchBtn').addEventListener('click', async () => {
     const ips = document.getElementById('cfIpInput').value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
     const aggs = document.getElementById('cfAggInput').value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
-    let hosts = ips;
+    if (!ips.length && !aggs.length) {
+      toast('请先填写优选 IP/域名或优选汇聚器', true);
+      return;
+    }
+    let hosts = [...ips];
+    let aggFailed = false;
     if (aggs.length) {
       toast('正在从汇聚器拉取优选节点…');
       const fr = await api.fetchCfNodes(aggs);
       if (fr && fr.nodes && fr.nodes.length) hosts = [...new Set([...hosts, ...fr.nodes])];
-      else toast('汇聚器未返回节点', true);
+      else aggFailed = true;
     }
-    await doTest(hosts);
+    if (!hosts.length) {
+      toast(aggFailed ? '汇聚器未返回优选节点，请检查地址或网络' : '请先填写优选 IP/域名或优选汇聚器', true);
+      return;
+    }
+    if (aggFailed) toast('汇聚器未返回节点，仅对已填 IP/域名测速');
+    toast(`正在对 ${hosts.length} 个节点测速…`);
+    renderCfNodeList(await runCfNodeSpeedTest(hosts));
   });
 
   document.getElementById('cfSaveBtn').addEventListener('click', async () => {
