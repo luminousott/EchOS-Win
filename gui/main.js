@@ -93,8 +93,8 @@ const DEFAULT_CONFIG = {
   logVisible: true,
   autoLaunch: false,
   webdav: null,
-  cfApiUrls: [],      // 自选 Cloudflare 节点：优选 API 地址列表
-  subscriptions: []   // 订阅器：订阅 URL 列表
+  cfApiUrls: [],      // 汇聚节点优选：优选汇聚器列表（如 zrf.zrf.me）
+  cfIpList: []        // 汇聚节点优选：手动优选 IP / 域名列表
 };
 
 let config = loadConfig();
@@ -790,7 +790,7 @@ function sanitizeServer(raw) {
 }
 
 // 导入：只接收参数完整的服务器，重名自动改名
-// ======================= 订阅解析（vless/vmess/trojan/ss） =======================
+// ======================= 汇聚节点优选（优选 IP/域名 + 优选汇聚器） =======================
 function base64DecodeSafe(s) {
   try {
     const b = Buffer.from(String(s).replace(/\s+/g, ''), 'base64');
@@ -799,149 +799,6 @@ function base64DecodeSafe(s) {
     return t;
   } catch (e) { return null; }
 }
-
-// 订阅内容可能是 base64 整体编码，也可能是明文多行
-function decodeSubscription(text) {
-  let t = String(text || '').trim();
-  if (!t) return '';
-  if (!/^(vless|vmess|trojan|ss|hysteria2|hysteria|tuic):\/\//i.test(t)) {
-    const decoded = base64DecodeSafe(t);
-    if (decoded && /(vless|vmess|trojan|ss|hysteria2|hysteria|tuic):\/\//i.test(decoded)) t = decoded;
-  }
-  return t;
-}
-
-function parseVlessLine(line) {
-  try {
-    const u = new URL(line.trim());
-    if (u.protocol !== 'vless:') return null;
-    const token = decodeURIComponent(u.username || '');
-    const host = u.hostname;
-    const port = u.port ? parseInt(u.port, 10) : 443;
-    const name = u.hash ? decodeURIComponent(u.hash.slice(1)) : host;
-    return { name: name || host, server: host, serverPort: port, token, protocol: 'vless' };
-  } catch (e) { return null; }
-}
-
-function parseTrojanLine(line) {
-  try {
-    const u = new URL(line.trim());
-    if (u.protocol !== 'trojan:') return null;
-    const token = decodeURIComponent(u.username || '');
-    const host = u.hostname;
-    const port = u.port ? parseInt(u.port, 10) : 443;
-    const name = u.hash ? decodeURIComponent(u.hash.slice(1)) : host;
-    return { name: name || host, server: host, serverPort: port, token, protocol: 'trojan' };
-  } catch (e) { return null; }
-}
-
-function parseShadowsocksLine(line) {
-  try {
-    const s = line.trim();
-    if (!s.toLowerCase().startsWith('ss://')) return null;
-    const hashIdx = s.indexOf('#');
-    const name = hashIdx >= 0 ? decodeURIComponent(s.slice(hashIdx + 1)) : '';
-    let rest = hashIdx >= 0 ? s.slice(5, hashIdx) : s.slice(5);
-    rest = rest.split('?')[0];
-    let methodPass, hostPort;
-    if (rest.includes('@')) {
-      [methodPass, hostPort] = rest.split('@');
-    } else {
-      const decoded = base64DecodeSafe(rest);
-      if (!decoded) return null;
-      [methodPass, hostPort] = decoded.split('@');
-    }
-    if (!hostPort) return null;
-    const host = hostPort.split(':')[0];
-    const port = parseInt(hostPort.split(':')[1], 10) || 443;
-    // method:password 可能是 base64 整体编码（ss://base64(method:password)@host:port）
-    if (!methodPass.includes(':')) {
-      const d = base64DecodeSafe(methodPass);
-      if (d && d.includes(':')) methodPass = d;
-    }
-    const sep = methodPass.indexOf(':');
-    const password = sep >= 0 ? methodPass.slice(sep + 1) : methodPass;
-    return { name: name || host, server: host, serverPort: port, token: password, protocol: 'ss' };
-  } catch (e) { return null; }
-}
-
-function parseVmessLine(line) {
-  try {
-    const s = line.trim();
-    if (!s.toLowerCase().startsWith('vmess://')) return null;
-    const b64 = s.slice(8).split('?')[0];
-    const decoded = base64DecodeSafe(b64);
-    if (!decoded) return null;
-    const j = JSON.parse(decoded);
-    const host = j.add || j.host;
-    const port = parseInt(j.port, 10) || 443;
-    const name = j.ps || j.remarks || host;
-    const token = j.id || '';
-    return { name, server: host, serverPort: port, token, protocol: 'vmess' };
-  } catch (e) { return null; }
-}
-
-function parseSubscription(text) {
-  const t = decodeSubscription(text);
-  const nodes = [];
-  for (const raw of t.split(/\r?\n/)) {
-    const l = String(raw).trim();
-    if (!l) continue;
-    let node = null;
-    if (/^vless:\/\//i.test(l)) node = parseVlessLine(l);
-    else if (/^vmess:\/\//i.test(l)) node = parseVmessLine(l);
-    else if (/^trojan:\/\//i.test(l)) node = parseTrojanLine(l);
-    else if (/^ss:\/\//i.test(l)) node = parseShadowsocksLine(l);
-    if (node) nodes.push(node);
-  }
-  return nodes;
-}
-
-async function fetchSubscriptionContent(url) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 15000);
-  try {
-    const resp = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    return { ok: true, text: await resp.text() };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-// 订阅节点导入服务器列表（服务地址 + 端口相同视为重复，跳过）
-function importSubscriptionNodes(nodes) {
-  if (!Array.isArray(nodes)) return 0;
-  let added = 0;
-  for (const n of nodes) {
-    if (!n || !String(n.server || '').trim()) continue;
-    const port = parseInt(n.serverPort, 10);
-    if (!(port > 0 && port <= 65535)) continue;
-    const dup = config.servers.some(x =>
-      String(x.server || '').toLowerCase() === String(n.server).toLowerCase() && x.serverPort === port);
-    if (dup) continue;
-    let name = String(n.name || n.server).trim() || n.server;
-    const base = name;
-    const taken = new Set(config.servers.map(x => x.name));
-    let i = 1;
-    while (taken.has(name)) name = `${base} ${String(i++).padStart(2, '0')}`;
-    config.servers.push(Object.assign({}, DEFAULT_SERVER, {
-      id: genId(), name,
-      server: String(n.server).trim(),
-      serverPort: port,
-      token: String(n.token || ''),
-      ip: ''
-    }));
-    added++;
-  }
-  if (!config.selectedID && config.servers.length) config.selectedID = config.servers[0].id;
-  saveConfig();
-  broadcastState();
-  return added;
-}
-
 function importServers(list) {
   if (!Array.isArray(list)) return { ok: false, error: '导入数据格式错误' };
   let added = 0;
@@ -1308,7 +1165,7 @@ function getPublicState() {
     autoLaunch: config.autoLaunch,
     showDiagnosticLogs: config.showDiagnosticLogs,
     cfApiUrls: config.cfApiUrls || [],
-    subscriptions: config.subscriptions || [],
+    cfIpList: config.cfIpList || [],
     webdav: config.webdav ? { url: config.webdav.url, username: config.webdav.username, directory: config.webdav.directory, hasPassword: !!(config.webdav.passwordEnc || config.webdav.password) } : null,
     kernelExists: fs.existsSync(kernelPath),
     kernelPath: kernelPath,
@@ -1458,50 +1315,84 @@ function extractHostsFromSubscriptionText(text) {
   return [...hosts];
 }
 
-// 从订阅 / 优选 API 拉取 Cloudflare 节点列表
-// 支持：订阅地址（base64 vless 链接）、优选 IP 列表、第三方优选 API
-ipcMain.handle('fetch-cf-nodes', async (e, apiUrls) => {
-  const urls = (Array.isArray(apiUrls) ? apiUrls : [apiUrls])
-    .map(u => String(u || '').trim())
-    .filter(u => /^https?:\/\//i.test(u))
-    .slice(0, 5);
+// ======================= 汇聚节点优选（按 _worker.js 优选节点获取逻辑移植） =======================
+const CF_UA = 'v2rayN/edgetunnel (https://github.com/cmliu/edgetunnel)';
+const PH_UUID = '00000000-0000-4000-8000-000000000000';
+const PH_HOST = 'example.com';
+
+// 从优选订阅生成器（sub:// 或域名）拉取优选 IP
+// 对应 _worker.js 的 获取优选订阅生成器数据：请求 /sub?host=example.com&uuid=00000000-...，
+// 响应为 base64 订阅，其中含占位符 uuid/host 的行即"优选 IP 行"，提取 host:port（含 #备注）
+async function fetchFromSubGenerator(source) {
+  const ips = [];
+  let base = String(source || '').trim().replace(/^sub:\/\//i, 'https://').split('#')[0].split('?')[0];
+  if (!/^https?:\/\//i.test(base)) base = 'https://' + base;
+  try { base = new URL(base).origin; } catch (e) { return ips; }
+
+  const subUrl = `${base}/sub?host=${PH_HOST}&uuid=${PH_UUID}`;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const resp = await fetch(subUrl, { signal: ctrl.signal, headers: { 'User-Agent': CF_UA } });
+    clearTimeout(t);
+    if (!resp.ok) return ips;
+    const decoded = base64DecodeSafe(await resp.text());
+    if (!decoded) return ips;
+    for (const line of decoded.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      if (line.includes(PH_UUID) && line.includes(PH_HOST)) {
+        const m = line.match(/:\/\/[^@]+@([^?]+)/);
+        if (m) {
+          const remark = line.match(/#(.+)$/);
+          ips.push(m[1] + (remark ? '#' + decodeURIComponent(remark[1]) : ''));
+        }
+      }
+    }
+  } catch (e) {}
+  return ips;
+}
+
+// 汇聚节点优选：优选 IP/域名 直接加入；汇聚器（sub://、域名、URL）按上述逻辑拉取
+ipcMain.handle('fetch-cf-nodes', async (e, inputs) => {
+  const list = (Array.isArray(inputs) ? inputs : [inputs])
+    .map(u => String(u || '').trim()).filter(Boolean).slice(0, 10);
   const nodes = new Set();
-  await Promise.allSettled(urls.map(async url => {
+  for (const raw of list) {
+    const lower = raw.toLowerCase();
+    // 直接是 IP / 域名（不含协议头、不带路径）
+    if (!lower.includes('://') && !lower.includes('/') && /^[0-9a-zA-Z][0-9a-zA-Z.\-]*$/.test(raw) && raw.includes('.')) {
+      nodes.add(raw);
+      continue;
+    }
+    // 带端口：IP:443 / host:443（不带协议头）
+    if (!lower.includes('://') && /^[0-9a-zA-Z][0-9a-zA-Z.\-]*:\d+$/.test(raw)) {
+      nodes.add(raw.split(':')[0]);
+      continue;
+    }
+    // 汇聚器：sub:// 或 域名 或 URL —— 先按优选订阅生成器接口拉取
+    const ips = await fetchFromSubGenerator(raw);
+    if (ips.length) {
+      for (const ip of ips) nodes.add(ip.split('#')[0].split(':')[0]);
+      continue;
+    }
+    // 备用：直接请求该地址，解析内容提取节点
+    const url = /^https?:\/\//i.test(raw) ? raw : 'https://' + raw;
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 8000);
-      const resp = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
+      const resp = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': CF_UA } });
       clearTimeout(t);
-      if (!resp.ok) return;
+      if (!resp.ok) continue;
       const text = await resp.text();
       for (const h of extractHostsFromSubscriptionText(text)) nodes.add(h);
     } catch (e) {}
-  }));
+  }
   return { ok: true, nodes: [...nodes].slice(0, 100) };
 });
 
 ipcMain.handle('import-servers', (e, list) => importServers(list));
 
-// 订阅器
-ipcMain.handle('fetch-subscription', async (e, url) => {
-  const r = await fetchSubscriptionContent(url);
-  if (!r.ok) return { ok: false, error: r.error };
-  const nodes = parseSubscription(r.text);
-  return { ok: true, nodes, count: nodes.length };
-});
 
-ipcMain.handle('import-subscription', (e, nodes) => {
-  const added = importSubscriptionNodes(nodes || []);
-  return { ok: true, added };
-});
-
-ipcMain.handle('update-subscription', async (e, url) => {
-  const r = await fetchSubscriptionContent(url);
-  if (!r.ok) return { ok: false, error: r.error };
-  const nodes = parseSubscription(r.text);
-  const added = importSubscriptionNodes(nodes);
-  return { ok: true, added, total: nodes.length };
-});
 
 ipcMain.handle('export-servers', async (e) => {
   const data = JSON.stringify(config.servers, null, 2);
@@ -1546,7 +1437,7 @@ ipcMain.handle('set-auto-launch', async (e, enabled) => setAutoLaunch(!!enabled)
 
 ipcMain.handle('set-config', (e, patch) => {
   if (patch && typeof patch === 'object') {
-    for (const k of ['logLevel', 'logVisible', 'showDiagnosticLogs', 'autoSystemProxy', 'cfApiUrls', 'subscriptions']) {
+    for (const k of ['logLevel', 'logVisible', 'showDiagnosticLogs', 'autoSystemProxy', 'cfApiUrls', 'cfIpList']) {
       if (k in patch) config[k] = patch[k];
     }
     saveConfig();

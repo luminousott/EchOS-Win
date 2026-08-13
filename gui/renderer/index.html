@@ -21,7 +21,7 @@
         <label class="menu-check"><input type="checkbox" id="logPanelSwitch"> 显示日志面板</label>
         <label class="menu-check"><input type="checkbox" id="diagLogSwitch"> 显示诊断日志</label>
         <div class="menu-sep"></div>
-        <div class="menu-item" data-act="subscription">订阅管理…</div>
+
         <div class="menu-item" data-act="reveal-logs">打开日志目录</div>
       </div>
     </div>
@@ -81,8 +81,7 @@
       <div class="cfg-row">
         <span class="label">优选域名(IP):</span>
         <input id="cfg_ip" class="input flex1" placeholder="cdns.doon.eu.org">
-        <select id="cfNodeSelect" class="select" title="选择 Cloudflare 节点"></select>
-        <button id="cfNodeTestBtn" class="btn small" title="对内置 Cloudflare 节点测速，自动填入最快节点">节点测速</button>
+        <button id="cfNodeTestBtn" class="btn small" title="通过优选订阅生成器获取优选 IP/域名并测速，选用后填入">优选获取</button>
       </div>
     </section>
 
