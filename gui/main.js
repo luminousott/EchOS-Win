@@ -1320,17 +1320,36 @@ const CF_UA = 'v2rayN/edgetunnel (https://github.com/cmliu/edgetunnel)';
 const PH_UUID = '00000000-0000-4000-8000-000000000000';
 const PH_HOST = 'example.com';
 
-// 请求汇聚器：代理运行时走本地 HTTP 代理（CONNECT 隧道）访问被墙源，未运行时直连
-function fetchViaProxy(urlStr, headers = {}, timeoutMs = 8000) {
-  return new Promise((resolve, reject) => {
+// 读取 Windows 系统代理（外部代理软件设的全局代理，如 Clash/v2rayN 的 127.0.0.1:7890）
+async function getSystemProxyEndpoint() {
+  try {
+    const [pe, ps] = await Promise.all([
+      regQuery(INTERNET_SETTINGS, 'ProxyEnable'),
+      regQuery(INTERNET_SETTINGS, 'ProxyServer')
+    ]);
+    if (!(pe === '0x1' || pe === '1') || !ps) return null;
+    // ProxyServer 可能形如 "127.0.0.1:7890" 或 "http=127.0.0.1:7890;https=127.0.0.1:7890"
+    const m = String(ps).match(/(?:https=)?([0-9a-zA-Z.\-\[\]]+):(\d+)/);
+    if (m) return { host: m[1], port: parseInt(m[2], 10) };
+  } catch (e) {}
+  return null;
+}
+
+// 请求汇聚器：优先走 EchOS 本地代理（运行中），其次系统代理（外部全局代理），最后直连。
+// 通过 HTTP 代理 CONNECT 隧道访问被墙源。
+async function fetchViaProxy(urlStr, headers = {}, timeoutMs = 8000) {
+  return new Promise(async (resolve, reject) => {
     let u;
     try { u = new URL(urlStr); } catch (e) { return reject(e); }
+    // 代理优先级：EchOS 本地代理（运行中）> Windows 系统代理（外部全局代理）> 直连
+    let proxy = null;
     const server = selectedServer();
-    const proxyPort = (isKernelRunning() && server) ? (server.listenPort + 1) : null;
+    if (isKernelRunning() && server) proxy = { host: '127.0.0.1', port: server.listenPort + 1 };
+    if (!proxy) proxy = await getSystemProxyEndpoint();
     const isHttps = u.protocol === 'https:';
 
     // 无代理或非 https：直连
-    if (!proxyPort || !isHttps) {
+    if (!proxy || !isHttps) {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       fetch(urlStr, { signal: ctrl.signal, headers })
@@ -1340,10 +1359,10 @@ function fetchViaProxy(urlStr, headers = {}, timeoutMs = 8000) {
       return;
     }
 
-    // 通过本地 HTTP 代理 CONNECT 隧道
+    // 通过 HTTP 代理 CONNECT 隧道
     const net = require('net');
     const tls = require('tls');
-    const sock = net.connect(proxyPort, '127.0.0.1');
+    const sock = net.connect(proxy.port, proxy.host);
     const timer = setTimeout(() => { sock.destroy(); reject(new Error('代理连接超时')); }, timeoutMs);
     sock.on('error', e => { clearTimeout(timer); reject(e); });
     sock.on('connect', () => {
