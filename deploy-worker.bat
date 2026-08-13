@@ -37,3 +37,6 @@ echo.
 echo Deploy done. URL: https://^<worker-name^>^.<your-cf-subdomain^>^.workers.dev
 echo Fill this into EchOS-Win "Server Address", port 443.
 exit /b 0
+
+
+pause

@@ -15,6 +15,7 @@ if "%GEO_SOURCE%"=="" set "GEO_SOURCE=https://github.com/Loyalsoldier/v2ray-rule
 call :fetch geoip.dat
 call :fetch geosite.dat
 echo Done: geo data ready.
+pause
 exit /b 0
 
 :fetch
