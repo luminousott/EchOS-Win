@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>EchOS-Win</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="title-row">
+      <div class="logo">☁</div>
+      <h1>EchOS</h1>
+      <span class="version" id="versionLabel"></span>
+    </div>
+    <div class="server-row">
+      <select id="serverSelect" title="选择服务器"></select>
+      <button id="manageBtn" class="btn ghost">服务器管理</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="card status-card">
+      <div class="status-left">
+        <div class="status-dot" id="statusDot"></div>
+        <div>
+          <div class="status-title" id="statusTitle">未运行</div>
+          <div class="status-sub" id="statusSub"></div>
+        </div>
+      </div>
+      <div class="status-right">
+        <button id="startBtn" class="btn primary">启动代理</button>
+        <button id="selfCheckBtn" class="btn ghost" title="通过本地代理探测连通性">自检</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">分流模式</div>
+      <div class="mode-row" id="modeRow">
+        <label class="mode-option" data-mode="bypassCN">
+          <input type="radio" name="mode" value="bypassCN">
+          <div><b>绕过中国大陆</b><span>国内直连，其余走代理（推荐）</span></div>
+        </label>
+        <label class="mode-option" data-mode="blacklist">
+          <input type="radio" name="mode" value="blacklist">
+          <div><b>黑名单模式</b><span>仅名单内网站走代理</span></div>
+        </label>
+        <label class="mode-option" data-mode="global">
+          <input type="radio" name="mode" value="global">
+          <div><b>全局模式</b><span>所有流量走代理</span></div>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">系统代理</div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-name">接管系统代理</div>
+          <div class="setting-desc" id="proxySummary">未启用</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="systemProxySwitch"><span class="slider"></span></label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-title">设置</div>
+      <div class="setting-row">
+        <div><div class="setting-name">开机自启</div><div class="setting-desc">登录 Windows 后自动启动</div></div>
+        <label class="switch"><input type="checkbox" id="autoLaunchSwitch"><span class="slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div><div class="setting-name">日志级别</div><div class="setting-desc">控制内核日志显示</div></div>
+        <select id="logLevelSelect" class="select">
+          <option value="off">关闭</option>
+          <option value="error">仅错误</option>
+          <option value="warning">警告以上</option>
+          <option value="info">全部</option>
+          <option value="checkOnly">自检记录</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <div><div class="setting-name">显示日志面板</div><div class="setting-desc">底部展开运行日志</div></div>
+        <label class="switch"><input type="checkbox" id="logVisibleSwitch"><span class="slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div><div class="setting-name">检查更新</div><div class="setting-desc">从 GitHub Releases 检查新版本</div></div>
+        <button id="checkUpdateBtn" class="btn ghost">检查</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="log-panel" id="logPanel">
+    <div class="log-header">
+      <span>运行日志</span>
+      <div class="log-actions">
+        <button id="revealLogsBtn" class="btn ghost small">打开日志目录</button>
+        <button id="clearLogsBtn" class="btn ghost small">清空</button>
+      </div>
+    </div>
+    <div class="log-body" id="logBody"></div>
+  </footer>
+</div>
+
+<div id="modalOverlay" class="overlay hidden">
+  <div id="modalBox" class="modal"></div>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>

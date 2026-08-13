@@ -1,0 +1,69 @@
+{
+  "name": "echos-win",
+  "version": "1.2.7",
+  "description": "EchOS-Win - 基于 ECH(Encrypted Client Hello) 的加密代理客户端（Windows 版，开源）",
+  "main": "main.js",
+  "author": "EchOS",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12",
+    "png-to-ico": "^3.0.2"
+  },
+  "build": {
+    "appId": "com.echos.windows",
+    "productName": "EchOS-Win",
+    "directories": {
+      "output": "../build/installer"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/icon.png",
+      "assets/icon.ico"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/x-tunnel.exe",
+        "to": "x-tunnel.exe"
+      },
+      {
+        "from": "../assets/geoip.dat",
+        "to": "geoip.dat"
+      },
+      {
+        "from": "../assets/geosite.dat",
+        "to": "geosite.dat"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "EchOS"
+    }
+  }
+}
