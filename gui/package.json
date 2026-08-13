@@ -1,6 +1,6 @@
 {
   "name": "echos-win",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "description": "EchOS-Win - 基于 ECH(Encrypted Client Hello) 的加密代理客户端（Windows 版，开源）",
   "main": "main.js",
   "author": "EchOS",
