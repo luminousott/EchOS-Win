@@ -1413,15 +1413,13 @@ async function fetchFromSubGenerator(source) {
   const subUrl = `${base}/sub?host=${PH_HOST}&uuid=${PH_UUID}`;
   logLine(`[优选] 汇聚器 "${source}" -> 请求 ${subUrl}`);
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
-    const resp = await fetchViaProxy(subUrl, { 'User-Agent': CF_UA }, 8000);
-    clearTimeout(t);
-    if (!resp.ok) {
-      logLine(`[优选] ${subUrl} 返回 HTTP ${resp.status}`);
+    // fetchViaProxy 返回 { status, text }
+    const r = await fetchViaProxy(subUrl, { 'User-Agent': CF_UA }, 8000);
+    if (!r || r.status < 200 || r.status >= 300) {
+      logLine(`[优选] ${subUrl} 返回 HTTP ${r ? r.status : '未知'}`);
       return ips;
     }
-    const decoded = base64DecodeSafe(await resp.text());
+    const decoded = base64DecodeSafe(r.text);
     if (!decoded) {
       logLine(`[优选] ${subUrl} 响应无法 base64 解码`);
       return ips;
